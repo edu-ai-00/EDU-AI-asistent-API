@@ -1,59 +1,140 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# EDU-AI API
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Laravel 12 (PHP 8.2+) REST API backing the EDU-AI Admin (Next.js) and EDU-AI App (Flutter) clients. Provides authentication, course/block content, AI-assisted endpoints, and supporting services (mail, file storage).
 
-## About Laravel
+## Tech stack
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+- **Framework**: Laravel 12, PHP 8.2+
+- **Auth**: Laravel Sanctum (token-based)
+- **Database**: SQLite by default; MySQL/PostgreSQL supported via `DB_CONNECTION`
+- **Mail**: Resend (`resend/resend-laravel`)
+- **Storage**: AWS S3 / S3-compatible (`league/flysystem-aws-s3-v3`)
+- **Tooling**: Pint (formatter), Pail (logs), Sail (Docker dev env), PHPUnit 11
+- **Doctrine DBAL** for advanced schema operations
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## Project structure
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+```
+app/
+  Console/        # Artisan commands
+  Http/           # controllers, requests, middleware, resources
+  Mail/           # mailable classes
+  Models/         # Eloquent models
+  Providers/      # service providers
+  Services/       # domain services / business logic
+  Support/        # shared helpers
+bootstrap/        # Laravel bootstrap (app, cache)
+config/           # configuration files
+database/
+  migrations/     # schema migrations
+  factories/      # model factories
+  seeders/        # database seeders
+public/           # web entry point (index.php) + public assets
+resources/        # views, lang, frontend assets
+routes/
+  api.php         # API routes
+  web.php         # web routes
+  console.php     # scheduled / console commands
+storage/          # logs, framework cache, file storage
+tests/            # Pest/PHPUnit tests
+docs/             # API + integration docs
+demo/             # demo fixtures
+Procfile          # process definition (Railway / Heroku-style)
+```
 
-## Learning Laravel
+## Prerequisites
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
+- PHP 8.2+ with `pdo_sqlite` (or your chosen DB driver), `mbstring`, `openssl`, `tokenizer`, `xml`, `ctype`, `bcmath`, `fileinfo`
+- Composer 2+
+- Node 20+ (only if you build front-end assets via Vite)
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+## Local development
 
-## Laravel Sponsors
+```bash
+cp .env.example .env
+composer install
+php artisan key:generate
+php artisan migrate
+php artisan serve            # http://127.0.0.1:8000
+```
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+All-in-one dev (server + queue + log tail + vite):
 
-### Premium Partners
+```bash
+composer dev
+```
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
+## Run with Docker
 
-## Contributing
+### Option A — Laravel Sail (recommended for local dev)
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+Sail is already a dev dependency. After `composer install`:
 
-## Code of Conduct
+```bash
+cp .env.example .env
+php artisan sail:install      # pick services (mysql, redis, mailpit, …)
+./vendor/bin/sail up -d
+./vendor/bin/sail artisan key:generate
+./vendor/bin/sail artisan migrate
+```
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+API at `http://localhost` (default Sail port). Stop with `./vendor/bin/sail down`.
 
-## Security Vulnerabilities
+### Option B — plain `docker run`
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+A production Dockerfile is not committed yet. For a quick container using the official PHP image:
+
+```bash
+docker run --rm -it \
+  -p 8000:8000 \
+  -v "$PWD":/app -w /app \
+  -e DB_CONNECTION=sqlite \
+  php:8.3-cli \
+  sh -c "apt-get update && apt-get install -y unzip libsqlite3-dev \
+    && docker-php-ext-install pdo_sqlite \
+    && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer \
+    && composer install --no-interaction \
+    && php artisan key:generate \
+    && touch database/database.sqlite \
+    && php artisan migrate --force \
+    && php artisan serve --host=0.0.0.0 --port=8000"
+```
+
+## Environment
+
+Configure via `.env` (see `.env.example`). Important variables:
+
+| Variable                      | Purpose                                  |
+|-------------------------------|------------------------------------------|
+| `APP_KEY`                     | App encryption key (`php artisan key:generate`) |
+| `APP_URL`                     | Public URL of the API                    |
+| `DB_CONNECTION` / `DB_*`      | Database driver + credentials            |
+| `SESSION_DRIVER`              | `database` by default                    |
+| `RESEND_API_KEY`              | Resend mail key                          |
+| `AWS_*`                       | S3 credentials, bucket, region           |
+| `SANCTUM_STATEFUL_DOMAINS`    | Comma list of frontend domains for SPA auth |
+
+## Useful commands
+
+| Command                              | Purpose                          |
+|--------------------------------------|----------------------------------|
+| `php artisan migrate`                | Run pending migrations           |
+| `php artisan migrate:fresh --seed`   | Reset DB and seed                |
+| `php artisan tinker`                 | REPL                             |
+| `php artisan queue:listen`           | Process queued jobs              |
+| `php artisan pail`                   | Tail application logs            |
+| `./vendor/bin/pint`                  | Format code                      |
+| `php artisan test`                   | Run PHPUnit suite                |
+
+## Deployment
+
+`Procfile` runs migrations and starts the built-in PHP server on `$PORT` — suitable for platforms like Railway. For production, prefer PHP-FPM behind nginx or a Laravel-aware container image.
+
+## Related
+
+- **EDU-AI-asistent-ADM** — Next.js admin (separate repository)
+- **EDU-AI-asistent-APP** — Flutter mobile/web client (separate repository)
 
 ## License
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+See `LICENSE`.
