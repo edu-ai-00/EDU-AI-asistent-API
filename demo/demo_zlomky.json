@@ -1,0 +1,965 @@
+{
+  "export_type": "course_v2",
+  "course_id": "ZS_MAT_ZLOMKY_5",
+  "version": 2,
+  "name": "Zlomky pro 5. ročník ZŠ",
+  "description": "Kurz zaměřený na pochopení zlomků, jejich zápis, porovnávání a základní operace. Navrženo podle RVP ZV a GPF standardů.",
+  "language": "cs",
+  "author": "EduAI Team",
+  "updated": "2025-01-08T12:00:00Z",
+  "status": "published",
+  "emoji": "🔢",
+
+  "_comment_structure": "=== STRUKTURA V2 FORMÁTU ===",
+  "_comment_lessons": "Lekce obsahují pouze REFERENCE na bloky (block_id). Samotný obsah bloků je v sekci 'blocks'.",
+  "_comment_blocks": "Bloky jsou nezávislé obsahové jednotky, které lze použít ve více lekcích nebo kurzech.",
+
+  "lessons": [
+    {
+      "lesson_id": "L01_UVOD",
+      "version": 1,
+      "name": "Co jsou zlomky?",
+      "description": "Motivace a základní porozumění konceptu zlomku jako části celku.",
+      "order": 1,
+      "blocks": [
+        {
+          "block_id": "B01_MOTIVACE_PIZZA",
+          "order": 1,
+          "bg_color": "#E8F5E9",
+          "default_practice": false,
+          "_comment": "Motivační blok - nepřidává se do procvičování"
+        },
+        {
+          "block_id": "B02_ZLOMEK_POJEM",
+          "order": 2,
+          "default_practice": true,
+          "_comment": "Obsahový blok - automaticky do procvičování"
+        }
+      ]
+    },
+    {
+      "lesson_id": "L02_ZAPIS",
+      "version": 1,
+      "name": "Zápis a čtení zlomků",
+      "description": "Naučíme se správně zapisovat a číst zlomky, rozlišovat čitatel a jmenovatel.",
+      "order": 2,
+      "blocks": [
+        {
+          "block_id": "B03_CITATEL_JMENOVATEL",
+          "order": 1,
+          "default_practice": true
+        },
+        {
+          "block_id": "B04_CVICENI_ZAPIS",
+          "order": 2,
+          "default_practice": true
+        }
+      ]
+    },
+    {
+      "lesson_id": "L03_POROVNAVANI",
+      "version": 1,
+      "name": "Porovnávání zlomků",
+      "description": "Jak poznat, který zlomek je větší? Porovnávání zlomků se stejným jmenovatelem.",
+      "order": 3,
+      "blocks": [
+        {
+          "block_id": "B05_POROVNAVANI_TEORIE",
+          "order": 1,
+          "default_practice": true
+        }
+      ]
+    }
+  ],
+
+  "blocks": [
+    {
+      "_comment_section": "========== BLOK 1: MOTIVACE ==========",
+      "export_type": "block_v2",
+      "block_id": "B01_MOTIVACE_PIZZA",
+      "version": 1,
+      "language": "cs",
+      "author": "MD",
+      "updated": "2025-01-08T12:00:00Z",
+      "status": "approved",
+      "type": "motivation",
+      "duration": "2 min",
+
+      "_comment_gpf": "GPF = Global Proficiency Framework - mezinárodní rámec pro hodnocení matematických kompetencí",
+      "gpf": {
+        "domain": "Number and operation",
+        "construct": "N2 FRACTIONS",
+        "subconstruct": "N2.1 Understand fraction concepts",
+        "grade": 5,
+        "level": 2,
+        "vector": [0, 0, 1, 1, 0, 0],
+        "kb_vector": [0.5, 0.3, 0.8]
+      },
+
+      "_comment_learning": "Metadata pro adaptivní učení a mapování na RVP kompetence",
+      "learning": {
+        "concepts": ["zlomky", "část celku", "dělení"],
+        "competencies": {
+          "M.5.2.1": 10
+        },
+        "bloom_level": 1,
+        "difficulty": 1,
+        "prerequisites": [],
+        "_comment_bloom": "1=Zapamatovat, 2=Porozumět, 3=Aplikovat, 4=Analyzovat, 5=Hodnotit, 6=Tvořit"
+      },
+
+      "_comment_fsrs": "FSRS = Free Spaced Repetition Scheduler - parametry pro rozložené opakování",
+      "fsrs": {
+        "initial_difficulty": 0.2,
+        "initial_stability": 3.0,
+        "initial_recall": 0.8,
+        "forgetting_rate": 0.2,
+        "repetitions": 0,
+        "weight": 0.5,
+        "min_interval": 1,
+        "max_interval": 30
+      },
+
+      "steps": {
+        "s1": {
+          "type": "display",
+          "description": "Úvodní motivační příklad s pizzou",
+          "expected_input": null,
+          "expected_output_format": "html_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "<div style='text-align: center'><p style='font-size: 1.2em'>🍕 Představ si, že máš celou pizzu rozdělenou na <strong>8 dílků</strong>.</p><p>Sníš <strong>3 dílky</strong>.</p><p style='margin-top: 20px; font-size: 1.1em'>Kolik pizzy ti zbyde? <strong>5 z 8 dílků</strong> = <strong>5/8</strong> pizzy!</p><p style='color: #666; margin-top: 20px'>Právě jsi použil/a zlomek!</p></div>"
+            }
+          },
+          "user_options": [
+            {
+              "id": "continue",
+              "label": "Pokračovat →",
+              "go_to": "s2",
+              "score_koef": 1
+            }
+          ]
+        },
+        "s2": {
+          "type": "display",
+          "description": "Příklady zlomků z běžného života",
+          "expected_input": null,
+          "expected_output_format": "html_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "<h3>Kde všude potkáme zlomky?</h3><ul><li>🍰 <strong>½ dortu</strong> - polovina</li><li>⏰ <strong>¼ hodiny</strong> = 15 minut</li><li>📏 <strong>¾ metru</strong> = 75 centimetrů</li><li>🎵 <strong>⅓ skladby</strong> - třetina písničky</li></ul><p style='margin-top: 20px; color: #2E7D32'>Zlomky jsou všude kolem nás a pomáhají nám přesně popsat části celku.</p>"
+            }
+          },
+          "user_options": [
+            {
+              "id": "next_block",
+              "label": "Jdeme se učit! →",
+              "go_to": "END",
+              "score_koef": 1
+            }
+          ]
+        }
+      }
+    },
+
+    {
+      "_comment_section": "========== BLOK 2: POJEM ZLOMEK ==========",
+      "export_type": "block_v2",
+      "block_id": "B02_ZLOMEK_POJEM",
+      "version": 1,
+      "language": "cs",
+      "author": "MD",
+      "updated": "2025-01-08T12:00:00Z",
+      "status": "approved",
+      "type": "content",
+      "duration": "5 min",
+
+      "gpf": {
+        "domain": "Number and operation",
+        "construct": "N2 FRACTIONS",
+        "subconstruct": "N2.1 Understand fraction concepts",
+        "grade": 5,
+        "level": 2,
+        "vector": [0, 1, 1, 1, 0, 0],
+        "kb_vector": [0.6, 0.4, 0.85]
+      },
+
+      "learning": {
+        "concepts": ["zlomek", "část celku", "podíl"],
+        "competencies": {
+          "M.5.2.1": 30,
+          "M.5.2.2": 20
+        },
+        "bloom_level": 2,
+        "difficulty": 2,
+        "prerequisites": [
+          {
+            "block_id": "B01_MOTIVACE_PIZZA",
+            "min_level": 0.3,
+            "_comment": "Stačí projít motivační blok"
+          }
+        ]
+      },
+
+      "fsrs": {
+        "initial_difficulty": 0.3,
+        "initial_stability": 2.5,
+        "initial_recall": 0.7,
+        "forgetting_rate": 0.25,
+        "repetitions": 0,
+        "weight": 1.0,
+        "min_interval": 1,
+        "max_interval": 60
+      },
+
+      "steps": {
+        "s1": {
+          "type": "display",
+          "description": "Definice zlomku",
+          "expected_input": null,
+          "expected_output_format": "html_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "<h3>Co je to zlomek?</h3><p><strong>Zlomek</strong> je způsob, jak zapsat <em>část celku</em>.</p><p style='margin: 20px 0; font-size: 1.3em; text-align: center; padding: 15px; background: #f5f5f5; border-radius: 8px'><strong>3/4</strong> znamená: máme <strong>3 části</strong> ze <strong>4 stejných dílů</strong></p><p>Když rozdělíme něco na stejné díly a vezmeme jen některé z nich, máme zlomek.</p>"
+            },
+            "ai_scaffolded": {
+              "output": "#api_response",
+              "api_call": {
+                "model": "gpt-4",
+                "prompt": "Vysvětli žákovi 5. třídy ZŠ, co je zlomek. Použij jednoduché příklady z běžného života. Rozděl vysvětlení do krátkých odstavců. Piš česky."
+              }
+            }
+          },
+          "user_options": [
+            {
+              "id": "continue",
+              "label": "Rozumím →",
+              "go_to": "s2",
+              "score_koef": 1
+            },
+            {
+              "id": "more_examples",
+              "label": "Chci více příkladů",
+              "go_to": "s3",
+              "score_koef": 0.9
+            }
+          ]
+        },
+        "s2": {
+          "type": "evaluation",
+          "description": "Kontrolní otázka k porozumění",
+          "expected_input": "user_input",
+          "expected_output_format": {
+            "type": "json",
+            "schema": {
+              "is_correct": "boolean"
+            }
+          },
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "Máme dort rozdělený na 6 dílků. Snědli jsme 2 dílky. Jaký zlomek dortu jsme snědli?",
+              "rules": {
+                "type": "exact_match",
+                "accepted_answers": ["2/6", "⅓", "1/3", "jedna třetina", "2 šestiny"]
+              }
+            }
+          },
+          "next_actions": [
+            {
+              "result": { "is_correct": true },
+              "label": "Výborně! Správná odpověď.",
+              "go_to": "s4",
+              "score_koef": 1
+            },
+            {
+              "result": { "is_correct": false },
+              "label": "Zkus to ještě jednou",
+              "go_to": "s3",
+              "score_koef": 0
+            }
+          ]
+        },
+        "s3": {
+          "type": "hint",
+          "description": "Nápověda s vizualizací",
+          "expected_input": null,
+          "expected_output_format": "html_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "<h3>💡 Nápověda</h3><p>Představ si dort rozřezaný na <strong>6 stejných kousků</strong>.</p><p>Snědli jsme <strong>2 kousky</strong>.</p><p style='margin: 15px 0; padding: 10px; background: #FFF3E0; border-radius: 8px'>Zapisujeme: <strong>počet snědených</strong> / <strong>počet všech kousků</strong></p><p>Tedy: <strong>2/6</strong> (čteme: dvě šestiny)</p>"
+            }
+          },
+          "user_options": [
+            {
+              "id": "try_again",
+              "label": "Zkusím znovu →",
+              "go_to": "s2",
+              "score_koef": 0.5
+            }
+          ]
+        },
+        "s4": {
+          "type": "display_solution",
+          "description": "Shrnutí a přechod dál",
+          "expected_input": null,
+          "expected_output_format": "html_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "<h3>✅ Správně!</h3><p>Snědli jsme <strong>2/6</strong> dortu (dvě šestiny).</p><p style='margin-top: 15px; color: #666'>Zajímavost: 2/6 je totéž jako 1/3 (jedna třetina). O tom se naučíme později při krácení zlomků!</p>"
+            }
+          },
+          "user_options": [
+            {
+              "id": "next",
+              "label": "Další lekce →",
+              "go_to": "END",
+              "score_koef": 1
+            }
+          ]
+        }
+      }
+    },
+
+    {
+      "_comment_section": "========== BLOK 3: ČITATEL A JMENOVATEL ==========",
+      "export_type": "block_v2",
+      "block_id": "B03_CITATEL_JMENOVATEL",
+      "version": 1,
+      "language": "cs",
+      "author": "MD",
+      "updated": "2025-01-08T12:00:00Z",
+      "status": "approved",
+      "type": "content",
+      "duration": "6 min",
+
+      "gpf": {
+        "domain": "Number and operation",
+        "construct": "N2 FRACTIONS",
+        "subconstruct": "N2.1 Understand fraction concepts",
+        "grade": 5,
+        "level": 3,
+        "vector": [0, 1, 2, 2, 0, 0],
+        "kb_vector": [0.7, 0.5, 0.9]
+      },
+
+      "learning": {
+        "concepts": ["čitatel", "jmenovatel", "zlomková čára"],
+        "competencies": {
+          "M.5.2.1": 40,
+          "M.5.2.2": 30
+        },
+        "bloom_level": 2,
+        "difficulty": 2,
+        "prerequisites": [
+          {
+            "block_id": "B02_ZLOMEK_POJEM",
+            "min_level": 0.6
+          }
+        ]
+      },
+
+      "fsrs": {
+        "initial_difficulty": 0.35,
+        "initial_stability": 2.5,
+        "initial_recall": 0.65,
+        "forgetting_rate": 0.25,
+        "repetitions": 0,
+        "weight": 1.2,
+        "min_interval": 1,
+        "max_interval": 60
+      },
+
+      "steps": {
+        "s1": {
+          "type": "display",
+          "description": "Představení částí zlomku",
+          "expected_input": null,
+          "expected_output_format": "html_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "<h3>Části zlomku</h3><div style='text-align: center; margin: 20px 0'><div style='font-size: 2em; line-height: 1.2'><span style='color: #1976D2'>3</span><br>─<br><span style='color: #E65100'>4</span></div></div><p><span style='color: #1976D2'><strong>Čitatel (nahoře)</strong></span> = kolik částí MÁME</p><p><span style='color: #E65100'><strong>Jmenovatel (dole)</strong></span> = na kolik částí jsme ROZDĚLILI celek</p><p style='margin-top: 15px'>Mezi nimi je <strong>zlomková čára</strong>.</p>"
+            }
+          },
+          "user_options": [
+            {
+              "id": "continue",
+              "label": "Rozumím →",
+              "go_to": "s2",
+              "score_koef": 1
+            }
+          ]
+        },
+        "s2": {
+          "type": "display_task",
+          "description": "Zapamatovací pomůcka",
+          "expected_input": null,
+          "expected_output_format": "html_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "<h3>💡 Jak si to zapamatovat?</h3><p style='padding: 15px; background: #E3F2FD; border-radius: 8px; margin: 15px 0'><strong>Č</strong>itatel = <strong>Č</strong>íslo nahoře (oboje začíná na Č)<br><strong>J</strong>menovatel = dole, <strong>j</strong>menuje celek</p><p>Nebo si představ dům: <em>Čitatel bydlí v podkroví (nahoře), jmenovatel ve sklepě (dole).</em></p>"
+            }
+          },
+          "user_options": [
+            {
+              "id": "test",
+              "label": "Chci se otestovat →",
+              "go_to": "s3",
+              "score_koef": 1
+            }
+          ]
+        },
+        "s3": {
+          "type": "evaluation",
+          "description": "Test - určení čitatele",
+          "expected_input": "user_input",
+          "expected_output_format": {
+            "type": "json",
+            "schema": {
+              "is_correct": "boolean"
+            }
+          },
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "Jaký je ČITATEL zlomku 5/8?",
+              "rules": {
+                "type": "exact_match",
+                "accepted_answers": ["5", "pět"]
+              }
+            }
+          },
+          "next_actions": [
+            {
+              "result": { "is_correct": true },
+              "label": "Správně!",
+              "go_to": "s4",
+              "score_koef": 1
+            },
+            {
+              "result": { "is_correct": false },
+              "label": "Zkus to znovu",
+              "go_to": "s5",
+              "score_koef": 0
+            }
+          ]
+        },
+        "s4": {
+          "type": "evaluation",
+          "description": "Test - určení jmenovatele",
+          "expected_input": "user_input",
+          "expected_output_format": {
+            "type": "json",
+            "schema": {
+              "is_correct": "boolean"
+            }
+          },
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "Výborně! A jaký je JMENOVATEL zlomku 5/8?",
+              "rules": {
+                "type": "exact_match",
+                "accepted_answers": ["8", "osm"]
+              }
+            }
+          },
+          "next_actions": [
+            {
+              "result": { "is_correct": true },
+              "label": "Perfektní!",
+              "go_to": "s6",
+              "score_koef": 1
+            },
+            {
+              "result": { "is_correct": false },
+              "label": "Zkus to znovu",
+              "go_to": "s5",
+              "score_koef": 0
+            }
+          ]
+        },
+        "s5": {
+          "type": "hint",
+          "description": "Nápověda",
+          "expected_input": null,
+          "expected_output_format": "html_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "<h3>💡 Připomenutí</h3><div style='text-align: center; margin: 15px 0'><div style='font-size: 1.5em'><strong style='color: #1976D2'>5</strong> ← Čitatel (nahoře)<br>─<br><strong style='color: #E65100'>8</strong> ← Jmenovatel (dole)</div></div>"
+            }
+          },
+          "user_options": [
+            {
+              "id": "retry",
+              "label": "Zkusím znovu →",
+              "go_to": "s3",
+              "score_koef": 0.5
+            }
+          ]
+        },
+        "s6": {
+          "type": "display_solution",
+          "description": "Úspěšné dokončení",
+          "expected_input": null,
+          "expected_output_format": "html_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "<h3>🎉 Skvělá práce!</h3><p>Zvládl/a jsi rozpoznat čitatel i jmenovatel.</p><p style='margin-top: 15px; padding: 10px; background: #E8F5E9; border-radius: 8px'><strong>Shrnutí:</strong><br>• Čitatel = číslo NAD čarou<br>• Jmenovatel = číslo POD čarou</p>"
+            }
+          },
+          "user_options": [
+            {
+              "id": "next",
+              "label": "Pokračovat →",
+              "go_to": "END",
+              "score_koef": 1
+            }
+          ]
+        }
+      }
+    },
+
+    {
+      "_comment_section": "========== BLOK 4: CVIČENÍ NA ZÁPIS ==========",
+      "export_type": "block_v2",
+      "block_id": "B04_CVICENI_ZAPIS",
+      "version": 1,
+      "language": "cs",
+      "author": "MD",
+      "updated": "2025-01-08T12:00:00Z",
+      "status": "approved",
+      "type": "exercise",
+      "duration": "8 min",
+
+      "gpf": {
+        "domain": "Number and operation",
+        "construct": "N2 FRACTIONS",
+        "subconstruct": "N2.1 Understand fraction concepts",
+        "grade": 5,
+        "level": 3,
+        "vector": [0, 1, 2, 2, 1, 0],
+        "kb_vector": [0.75, 0.6, 0.9]
+      },
+
+      "learning": {
+        "concepts": ["zápis zlomku", "čtení zlomku", "slovní vyjádření"],
+        "competencies": {
+          "M.5.2.1": 50,
+          "M.5.2.2": 40
+        },
+        "bloom_level": 3,
+        "difficulty": 2,
+        "prerequisites": [
+          {
+            "block_id": "B03_CITATEL_JMENOVATEL",
+            "min_level": 0.7
+          }
+        ]
+      },
+
+      "fsrs": {
+        "initial_difficulty": 0.35,
+        "initial_stability": 2.0,
+        "initial_recall": 0.6,
+        "forgetting_rate": 0.25,
+        "repetitions": 0,
+        "weight": 1.5,
+        "min_interval": 1,
+        "max_interval": 60,
+        "time_limit_sec": 180
+      },
+
+      "_comment_adaptation": "Pravidla pro automatický výběr režimu podle výkonu žáka",
+      "adaptation": {
+        "scaffolded": "avg_relevant_score < 0.5",
+        "full": "avg_relevant_score >= 0.5"
+      },
+
+      "steps": {
+        "s1": {
+          "type": "display_task",
+          "description": "Instrukce k cvičení",
+          "expected_input": null,
+          "expected_output_format": "html_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "<h3>📝 Cvičení: Zápis zlomků</h3><p>Nyní si procvičíme zápis zlomků. Budu ti zadávat slovně a ty zapíšeš zlomek čísly.</p><p style='color: #666; font-size: 0.9em'>Příklad: \"tři čtvrtiny\" → 3/4</p>"
+            }
+          },
+          "user_options": [
+            {
+              "id": "start",
+              "label": "Začít cvičení →",
+              "go_to": "s2",
+              "score_koef": 1
+            }
+          ]
+        },
+        "s2": {
+          "type": "evaluation",
+          "description": "Úloha 1",
+          "expected_input": "user_input",
+          "expected_output_format": {
+            "type": "json",
+            "schema": {
+              "is_correct": "boolean"
+            }
+          },
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "Zapiš zlomek: DVĚ TŘETINY",
+              "rules": {
+                "type": "exact_match",
+                "accepted_answers": ["2/3", "⅔"]
+              }
+            }
+          },
+          "next_actions": [
+            {
+              "result": { "is_correct": true },
+              "label": "✓ Správně!",
+              "go_to": "s3",
+              "score_koef": 1
+            },
+            {
+              "result": { "is_correct": false },
+              "label": "✗ Zkus to znovu",
+              "go_to": "s2_hint",
+              "score_koef": 0
+            }
+          ]
+        },
+        "s2_hint": {
+          "type": "hint",
+          "expected_input": null,
+          "expected_output_format": "plain_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "DVĚ = čitatel (2), TŘETINY = jmenovatel (3). Zapiš jako: čitatel/jmenovatel"
+            }
+          },
+          "user_options": [
+            {
+              "id": "retry",
+              "label": "Zkusím znovu",
+              "go_to": "s2",
+              "score_koef": 0.5
+            }
+          ]
+        },
+        "s3": {
+          "type": "evaluation",
+          "description": "Úloha 2",
+          "expected_input": "user_input",
+          "expected_output_format": {
+            "type": "json",
+            "schema": {
+              "is_correct": "boolean"
+            }
+          },
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "Zapiš zlomek: PĚT OSMIN",
+              "rules": {
+                "type": "exact_match",
+                "accepted_answers": ["5/8", "⅝"]
+              }
+            }
+          },
+          "next_actions": [
+            {
+              "result": { "is_correct": true },
+              "label": "✓ Výborně!",
+              "go_to": "s4",
+              "score_koef": 1
+            },
+            {
+              "result": { "is_correct": false },
+              "label": "✗ Zkus to znovu",
+              "go_to": "s3_hint",
+              "score_koef": 0
+            }
+          ]
+        },
+        "s3_hint": {
+          "type": "hint",
+          "expected_input": null,
+          "expected_output_format": "plain_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "PĚT = 5 (čitatel), OSMIN = 8 (jmenovatel). Výsledek: 5/8"
+            }
+          },
+          "user_options": [
+            {
+              "id": "retry",
+              "label": "Zkusím znovu",
+              "go_to": "s3",
+              "score_koef": 0.5
+            }
+          ]
+        },
+        "s4": {
+          "type": "evaluation",
+          "description": "Úloha 3 - opačný směr",
+          "expected_input": "user_input",
+          "expected_output_format": {
+            "type": "json",
+            "schema": {
+              "is_correct": "boolean"
+            }
+          },
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "Jak přečteš zlomek 7/10?",
+              "rules": {
+                "type": "contains",
+                "accepted_answers": ["sedm", "desetin"]
+              }
+            }
+          },
+          "next_actions": [
+            {
+              "result": { "is_correct": true },
+              "label": "✓ Přesně tak!",
+              "go_to": "s5",
+              "score_koef": 1
+            },
+            {
+              "result": { "is_correct": false },
+              "label": "✗ Zkontroluj odpověď",
+              "go_to": "s4_hint",
+              "score_koef": 0
+            }
+          ]
+        },
+        "s4_hint": {
+          "type": "hint",
+          "expected_input": null,
+          "expected_output_format": "plain_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "Čteme: čitatel + tvar jmenovatele. 7 = sedm, 10 = desetiny. Odpověď: sedm desetin"
+            }
+          },
+          "user_options": [
+            {
+              "id": "retry",
+              "label": "Zkusím znovu",
+              "go_to": "s4",
+              "score_koef": 0.5
+            }
+          ]
+        },
+        "s5": {
+          "type": "display_solution",
+          "description": "Shrnutí cvičení",
+          "expected_input": null,
+          "expected_output_format": "html_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "<h3>🎉 Cvičení dokončeno!</h3><p>Skvěle, zvládl/a jsi zápis i čtení zlomků.</p><p style='margin-top: 15px; padding: 10px; background: #E8F5E9; border-radius: 8px'><strong>Zapamatuj si:</strong><br>• Čitatel určuje KOLIK částí máme<br>• Jmenovatel určuje NA KOLIK dílů dělíme<br>• Čteme: čitatel + tvar jmenovatele</p>"
+            }
+          },
+          "user_options": [
+            {
+              "id": "next",
+              "label": "Další lekce →",
+              "go_to": "END",
+              "score_koef": 1
+            }
+          ]
+        }
+      }
+    },
+
+    {
+      "_comment_section": "========== BLOK 5: POROVNÁVÁNÍ ZLOMKŮ ==========",
+      "export_type": "block_v2",
+      "block_id": "B05_POROVNAVANI_TEORIE",
+      "version": 1,
+      "language": "cs",
+      "author": "MD",
+      "updated": "2025-01-08T12:00:00Z",
+      "status": "draft",
+      "type": "content",
+      "duration": "7 min",
+
+      "gpf": {
+        "domain": "Number and operation",
+        "construct": "N2 FRACTIONS",
+        "subconstruct": "N2.2 Compare and order fractions",
+        "grade": 5,
+        "level": 3,
+        "vector": [0, 1, 2, 2, 2, 0],
+        "kb_vector": [0.8, 0.65, 0.9]
+      },
+
+      "learning": {
+        "concepts": ["porovnávání zlomků", "stejný jmenovatel", "větší", "menší"],
+        "competencies": {
+          "M.5.2.3": 50,
+          "M.5.2.4": 30
+        },
+        "bloom_level": 3,
+        "difficulty": 3,
+        "prerequisites": [
+          {
+            "block_id": "B03_CITATEL_JMENOVATEL",
+            "min_level": 0.8
+          },
+          {
+            "block_id": "B04_CVICENI_ZAPIS",
+            "min_level": 0.6
+          }
+        ]
+      },
+
+      "fsrs": {
+        "initial_difficulty": 0.4,
+        "initial_stability": 2.0,
+        "initial_recall": 0.55,
+        "forgetting_rate": 0.3,
+        "repetitions": 0,
+        "weight": 1.5,
+        "min_interval": 2,
+        "max_interval": 60
+      },
+
+      "steps": {
+        "s1": {
+          "type": "display",
+          "description": "Úvod do porovnávání",
+          "expected_input": null,
+          "expected_output_format": "html_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "<h3>Který zlomek je větší?</h3><p>Představ si dvě pizzy, obě rozdělené na <strong>8 dílků</strong>.</p><p>Z první máš <strong>3 dílky</strong> (3/8), z druhé <strong>5 dílků</strong> (5/8).</p><p style='margin-top: 15px; font-size: 1.1em; text-align: center'><strong>5/8 > 3/8</strong></p><p style='color: #2E7D32'>Když mají zlomky <em>stejný jmenovatel</em>, větší je ten s větším čitatelem!</p>"
+            }
+          },
+          "user_options": [
+            {
+              "id": "continue",
+              "label": "Rozumím →",
+              "go_to": "s2",
+              "score_koef": 1
+            }
+          ]
+        },
+        "s2": {
+          "type": "display_task",
+          "description": "Pravidlo pro porovnávání",
+          "expected_input": null,
+          "expected_output_format": "html_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "<h3>📐 Pravidlo</h3><div style='padding: 15px; background: #E3F2FD; border-radius: 8px; margin: 15px 0'><p><strong>Zlomky se stejným jmenovatelem:</strong></p><p>Porovnáváme pouze čitatele.</p><p style='margin-top: 10px'>Příklad: 2/5 < 4/5 (protože 2 < 4)</p></div>"
+            }
+          },
+          "user_options": [
+            {
+              "id": "test",
+              "label": "Otestuj mě →",
+              "go_to": "s3",
+              "score_koef": 1
+            }
+          ]
+        },
+        "s3": {
+          "type": "evaluation",
+          "description": "Test porovnávání",
+          "expected_input": "user_input",
+          "expected_output_format": {
+            "type": "json",
+            "schema": {
+              "is_correct": "boolean"
+            }
+          },
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "Který zlomek je VĚTŠÍ: 3/7 nebo 6/7?",
+              "rules": {
+                "type": "exact_match",
+                "accepted_answers": ["6/7", "6 sedmin", "druhý", "šest sedmin"]
+              }
+            }
+          },
+          "next_actions": [
+            {
+              "result": { "is_correct": true },
+              "label": "✓ Správně!",
+              "go_to": "s4",
+              "score_koef": 1
+            },
+            {
+              "result": { "is_correct": false },
+              "label": "✗ Zkus to znovu",
+              "go_to": "s3_hint",
+              "score_koef": 0
+            }
+          ]
+        },
+        "s3_hint": {
+          "type": "hint",
+          "expected_input": null,
+          "expected_output_format": "plain_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "Oba zlomky mají jmenovatel 7. Porovnej čitatele: 3 a 6. Který je větší?"
+            }
+          },
+          "user_options": [
+            {
+              "id": "retry",
+              "label": "Zkusím znovu",
+              "go_to": "s3",
+              "score_koef": 0.5
+            }
+          ]
+        },
+        "s4": {
+          "type": "display_solution",
+          "description": "Závěr lekce",
+          "expected_input": null,
+          "expected_output_format": "html_text",
+          "modes": {
+            "static": {
+              "default": true,
+              "output": "<h3>🎉 Výborně!</h3><p><strong>6/7 > 3/7</strong> protože 6 > 3 (jmenovatel je stejný).</p><p style='margin-top: 15px; padding: 10px; background: #FFF3E0; border-radius: 8px'><strong>Co dál?</strong><br>Naučíme se porovnávat zlomky s různými jmenovateli!</p>"
+            }
+          },
+          "user_options": [
+            {
+              "id": "finish",
+              "label": "Dokončit lekci →",
+              "go_to": "END",
+              "score_koef": 1
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
