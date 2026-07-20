@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\CourseSkillConfig;
+use App\Models\PracticeReviewLog;
 use App\Models\User;
 use App\Models\EloInteraction;
 use App\Models\UserEloProfile;
@@ -241,6 +242,25 @@ class AdminUserController extends Controller
             ];
         });
 
+        // Practice (Procvičování) pass-throughs: one row per FSRS review, joined
+        // to its card for block/lesson/course, newest first (BR-DKDAPK). Capped
+        // like the user-facing review-log index to bound payload size.
+        $practiceReviews = PracticeReviewLog::with('card:id,course_id,lesson_id,block_id,source_type')
+            ->where('user_id', $id)
+            ->orderByDesc('reviewed_at')
+            ->limit(500)
+            ->get()
+            ->map(fn ($r) => [
+                'block_id' => $r->card?->block_id,
+                'lesson_id' => $r->card?->lesson_id,
+                'course_id' => $r->card?->course_id,
+                'source_type' => $r->card?->source_type,
+                'rating' => $r->rating,
+                'response_time_sec' => $r->response_time_sec,
+                'shown_at' => $r->shown_at?->toIso8601String(),
+                'reviewed_at' => $r->reviewed_at?->toIso8601String(),
+            ]);
+
         return response()->json([
             'data' => [
                 'id' => $user->id,
@@ -323,6 +343,7 @@ class AdminUserController extends Controller
                         'created_at' => $b->created_at->toIso8601String(),
                     ]),
                 'sessions' => $sessionsData,
+                'practice_reviews' => $practiceReviews,
             ],
         ]);
     }

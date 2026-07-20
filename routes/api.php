@@ -6,7 +6,10 @@ use App\Http\Controllers\Api\ChatMessageController;
 use App\Http\Controllers\Api\ChatSessionController;
 use App\Http\Controllers\Api\AdminClassroomController;
 use App\Http\Controllers\Api\AdminTeamController;
+use App\Http\Controllers\Api\AdminNewsController;
 use App\Http\Controllers\Api\AdminUserController;
+use App\Http\Controllers\Api\AdminWorkTimeController;
+use App\Http\Controllers\Api\WorkHeartbeatController;
 use App\Http\Controllers\Api\AdminUserMergeController;
 use App\Http\Controllers\Api\AssetController;
 use App\Http\Controllers\Api\AuthController;
@@ -25,6 +28,9 @@ use App\Http\Controllers\Api\EloInteractionController;
 use App\Http\Controllers\Api\EloProfileController;
 use App\Http\Controllers\Api\EmailVerificationController;
 use App\Http\Controllers\Api\GamificationConfigController;
+use App\Http\Controllers\Api\GpfController;
+use App\Http\Controllers\Api\NewsController;
+use App\Http\Controllers\Api\OAuthController;
 use App\Http\Controllers\Api\UserAchievementController;
 use App\Http\Controllers\Api\QuizAttemptController;
 use App\Http\Controllers\Api\CourseSkillsController;
@@ -49,6 +55,14 @@ Route::post('/login', [AuthController::class, 'login']);
 // Guest routes (public)
 Route::post('/guest/register', [AuthController::class, 'registerGuest']);
 
+// OAuth social sign-in (public) — id_token exchange, throttled.
+Route::post('/auth/google', [OAuthController::class, 'google'])
+    ->middleware('throttle:oauth');
+Route::post('/auth/apple', [OAuthController::class, 'apple'])
+    ->middleware('throttle:oauth');
+Route::post('/auth/microsoft', [OAuthController::class, 'microsoft'])
+    ->middleware('throttle:oauth');
+
 // Code resolver (student login code or course PIN) — throttled to deter brute-force.
 Route::post('/resolve-code', [CodeController::class, 'resolve'])
     ->middleware('throttle:code-resolve');
@@ -62,8 +76,11 @@ Route::prefix('email')->group(function () {
     Route::post('/check', [EmailVerificationController::class, 'check']);
     Route::post('/send-code', [EmailVerificationController::class, 'sendCode'])
         ->middleware('throttle:email-send-code');
+    // auth.optional resolves the caller's guest token (still active at verify
+    // time, before the client switches to the returned token) so the guest's
+    // data can be folded into a pre-existing account (BR-4FTCFH).
     Route::post('/verify', [EmailVerificationController::class, 'verify'])
-        ->middleware('throttle:email-verify');
+        ->middleware(['auth.optional', 'throttle:email-verify']);
 });
 
 // Gamification config (public, cached by app)
@@ -146,6 +163,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/elo/interactions', [EloInteractionController::class, 'store']);
     Route::post('/elo/interactions/batch', [EloInteractionController::class, 'storeBatch']);
 
+    // Work-time activity heartbeats (BR-9SAH2R)
+    Route::post('/work/heartbeats', [WorkHeartbeatController::class, 'store']);
+
     // Block Stats
     Route::get('/blocks/stats', [BlockStatController::class, 'index']);
 
@@ -174,6 +194,9 @@ Route::middleware('auth:sanctum')->group(function () {
     // Student skill vector (own or by teacher)
     Route::get('/students/{id}/skill-vector', [StudentSkillController::class, 'show']);
 
+    // Canonical GPF vector dimension labels (read-only reference for the app)
+    Route::get('/gpf/dimensions', [GpfController::class, 'dimensions']);
+
     // Course skill config (read)
     Route::get('/courses/{id}/skill-config', [SkillConfigController::class, 'show']);
 
@@ -200,6 +223,11 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/messages', [ChatMessageController::class, 'allMessages']);
         Route::put('/messages/{id}/feedback', [ChatMessageController::class, 'updateFeedback']);
     });
+
+    // News (read-only for users)
+    Route::get('/news', [NewsController::class, 'index']);
+    Route::get('/news/{id}', [NewsController::class, 'show']);
+    Route::post('/news/{id}/read', [NewsController::class, 'markRead']);
 
 });
 
@@ -235,6 +263,7 @@ Route::middleware('admin')->group(function () {
     // ELO backfill (admin-only)
     Route::get('/admin/elo/backfill/preview/{courseId}', [EloBackfillController::class, 'preview']);
     Route::post('/admin/elo/backfill/run/{courseId}', [EloBackfillController::class, 'run']);
+    Route::post('/admin/elo/backfill/timestamps/{courseId}', [EloBackfillController::class, 'runTimestampBackfill']);
 
     // Asset management
     Route::get('/admin/assets', [AssetController::class, 'index']);
@@ -246,6 +275,13 @@ Route::middleware('admin')->group(function () {
     Route::post('/admin/team', [AdminTeamController::class, 'store']);
     Route::put('/admin/team/{id}', [AdminTeamController::class, 'update']);
     Route::delete('/admin/team/{id}', [AdminTeamController::class, 'destroy']);
+
+    // News management (admin-only)
+    Route::get('/admin/news', [AdminNewsController::class, 'index']);
+    Route::post('/admin/news', [AdminNewsController::class, 'store']);
+    Route::get('/admin/news/{id}', [AdminNewsController::class, 'show']);
+    Route::put('/admin/news/{id}', [AdminNewsController::class, 'update']);
+    Route::delete('/admin/news/{id}', [AdminNewsController::class, 'destroy']);
 
     // Vector management (admin-only)
     Route::get('/admin/vectors', [VectorController::class, 'index']);
@@ -280,6 +316,7 @@ Route::middleware('admin:admin,teacher')->group(function () {
     Route::get('/admin/users/merge/preview', [AdminUserMergeController::class, 'preview']);
     Route::post('/admin/users/merge', [AdminUserMergeController::class, 'merge']);
     Route::get('/admin/users/{userId}/skills', [AdminUserController::class, 'skills']);
+    Route::get('/admin/users/{userId}/work-time', [AdminWorkTimeController::class, 'show']);
     Route::get('/admin/users/{id}', [AdminUserController::class, 'show']);
     Route::put('/admin/users/{id}', [AdminUserController::class, 'update']);
 
@@ -299,6 +336,8 @@ Route::middleware('admin:admin,teacher')->group(function () {
     // Progress management (teacher.course gates by courseId param)
     Route::get('/admin/progress/{courseId}', [UserProgressController::class, 'adminByCourse'])->middleware('teacher.course:courseId');
     Route::get('/admin/progress/{courseId}/stats', [UserProgressController::class, 'adminCourseStats'])->middleware('teacher.course:courseId');
+    Route::get('/admin/progress/{courseId}/answers', [UserProgressController::class, 'adminCourseAnswers'])->middleware('teacher.course:courseId');
+    Route::get('/admin/progress/{courseId}/answers/export', [UserProgressController::class, 'adminCourseAnswersExport'])->middleware('teacher.course:courseId');
     Route::get('/admin/progress/user/{userId}', [UserProgressController::class, 'adminByUser']);
 
     // Quiz attempts management

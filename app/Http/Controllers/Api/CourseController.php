@@ -254,6 +254,18 @@ class CourseController extends Controller
     {
         $course = Course::findOrFail($id);
 
+        $user = $request->user();
+
+        // Access control: courses flagged logged_only require a real (non-guest)
+        // account. Guests hold Sanctum tokens too, so the auth:sanctum middleware
+        // alone does not gate them — enforce it here (BR-N2ENN4).
+        if ($course->logged_only && (!$user || $user->is_guest)) {
+            return response()->json([
+                'message' => 'This course requires you to register or sign in.',
+                'course_id' => $course->course_id,
+            ], 403);
+        }
+
         // Check if file exists in R2
         if (!$course->hasR2File()) {
             return response()->json([
@@ -263,7 +275,6 @@ class CourseController extends Controller
         }
 
         // Track download in user_courses if authenticated
-        $user = $request->user();
         if ($user) {
             UserCourse::updateOrCreate(
                 [
@@ -323,15 +334,29 @@ class CourseController extends Controller
             'data.export_type' => 'required|in:course_v2,exercise_v2,quiz_v2',
         ]);
 
-        $course = Course::create([
-            'course_id' => $validated['course_id'],
-            'name' => $validated['name'],
-            'version' => $validated['version'],
-            'language' => $validated['language'],
-            'status' => $validated['status'] ?? 'draft',
-            'data' => $validated['data'],
-            'created_by' => $request->user()?->id,
-        ]);
+        // Use the full submitted data — validated() strips nested keys without
+        // an explicit rule (e.g. `lessons`), which would zero out the derived
+        // metadata and truncate the stored `data` backup.
+        $fullData = $request->input('data');
+
+        $display = $this->storageService->extractDisplayMetadata($fullData);
+        // New course: fall back to a detected emoji when none was provided.
+        $display['emoji'] ??= $this->storageService->detectEmoji($fullData);
+
+        $course = Course::create(array_merge(
+            // Denormalize display metadata (lesson_count, duration, description, …)
+            // from the course JSON so listings can show it without the full data.
+            $display,
+            [
+                'course_id' => $validated['course_id'],
+                'name' => $validated['name'],
+                'version' => $validated['version'],
+                'language' => $validated['language'],
+                'status' => $validated['status'] ?? 'draft',
+                'data' => $fullData,
+                'created_by' => $request->user()?->id,
+            ],
+        ));
 
         return response()->json([
             'message' => 'Course created successfully',
@@ -364,6 +389,24 @@ class CourseController extends Controller
             'data' => 'sometimes|array',
             'data.export_type' => 'required_with:data|in:course_v2,exercise_v2,quiz_v2',
         ]);
+
+        // When course content changes, re-derive the denormalized display
+        // metadata (lesson_count, duration, description, emoji, flags) so the
+        // listing stays accurate for not-yet-downloaded courses. Explicit
+        // fields in the request win; null-derived fields are dropped so we
+        // don't wipe an existing description/emoji when data omits them.
+        if (isset($validated['data'])) {
+            // Use the full submitted data — validated() drops nested keys
+            // (e.g. `lessons`) that lack an explicit rule.
+            $fullData = $request->input('data');
+            $validated['data'] = $fullData;
+
+            $derived = array_filter(
+                $this->storageService->extractDisplayMetadata($fullData),
+                fn ($value) => $value !== null,
+            );
+            $validated = array_merge($derived, $validated);
+        }
 
         $course->update($validated);
 

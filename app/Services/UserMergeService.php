@@ -112,6 +112,41 @@ class UserMergeService
         });
     }
 
+    /**
+     * Self-service guest → full-account merge, used by the guest-upgrade flows
+     * (email verify / guest claim) when a guest signs into a pre-existing full
+     * account. Unlike the admin merge there is no acting admin: authorisation
+     * comes from the guest's own Sanctum token plus a recently-verified email,
+     * and `performed_by` is recorded as the surviving target account.
+     *
+     * Returns null (without throwing) when the pairing is not a valid guest →
+     * full merge — a null/non-guest source, self-merge, or a target that is
+     * already merged or an admin/teacher — so callers can always fall through
+     * to their normal login/error handling. Merge failures are reported but
+     * never bubble up, so folding data in can never block a login.
+     */
+    public function absorbGuest(?User $guest, User $target): ?UserMerge
+    {
+        if ($guest === null || !$guest->is_guest || $guest->isMerged()) {
+            return null;
+        }
+        if ($guest->id === $target->id) {
+            return null;
+        }
+        if ($target->isMerged() || $target->isAdminOrTeacher()) {
+            return null;
+        }
+
+        try {
+            // performed_by = target: the account the guest is folding into is
+            // the surviving owner, and there is no admin actor for self-service.
+            return $this->merge($guest->id, $target->id, $target->id);
+        } catch (\Throwable $e) {
+            report($e);
+            return null;
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // Validation & loading
     // ═══════════════════════════════════════════════════════════════════════════

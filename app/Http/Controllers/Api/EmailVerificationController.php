@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Mail\VerificationCodeMail;
 use App\Models\User;
 use App\Models\VerificationCode;
+use App\Services\UserMergeService;
 use App\Support\SessionTokens;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -85,7 +86,7 @@ class EmailVerificationController extends Controller
      *
      * POST /api/email/verify
      */
-    public function verify(Request $request): JsonResponse
+    public function verify(Request $request, UserMergeService $mergeService): JsonResponse
     {
         $request->validate([
             'email' => 'required|email',
@@ -130,6 +131,16 @@ class EmailVerificationController extends Controller
         if ($user) {
             $user->email_verified_at = now();
             $user->save();
+
+            // If the caller is currently an anonymous guest (its bearer token is
+            // still the guest's at this point — the client only switches to the
+            // token returned below afterwards), fold the guest's in-progress
+            // courses/progress into the account being signed into. Without this
+            // the guest's enrollments stay orphaned on the guest row and vanish
+            // from the full account's course list (BR-4FTCFH). No-ops safely
+            // when the caller is not a guest.
+            $mergeService->absorbGuest($request->user('sanctum'), $user);
+            $user->refresh();
 
             // Generate token for existing user
             $issued = SessionTokens::issueLogin($user, $request, 'auth-token');

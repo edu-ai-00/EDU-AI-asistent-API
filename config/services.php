@@ -22,6 +22,36 @@ return [
         'key' => env('RESEND_API_KEY'),
     ],
 
+    'google' => [
+        // Comma-separated OAuth client IDs accepted as id_token audiences.
+        // Include every platform client (Web, iOS, Android) that signs users in.
+        'client_ids' => array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) env('GOOGLE_CLIENT_IDS', ''))
+        ))),
+    ],
+
+    'apple' => [
+        // Comma-separated client IDs accepted as identity-token audiences:
+        // the native iOS bundle ID and (for web) the Services ID.
+        'client_ids' => array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) env('APPLE_CLIENT_IDS', ''))
+        ))),
+    ],
+
+    'microsoft' => [
+        // Comma-separated Entra ID application (client) IDs accepted as
+        // id_token audiences.
+        'client_ids' => array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) env('MICROSOFT_CLIENT_IDS', ''))
+        ))),
+        // Tenant: a specific GUID (single-tenant) or common/organizations/
+        // consumers (multi-tenant). Must match the app's aad_oauth config.
+        'tenant' => env('MICROSOFT_TENANT', 'common'),
+    ],
+
     'ses' => [
         'key' => env('AWS_ACCESS_KEY_ID'),
         'secret' => env('AWS_SECRET_ACCESS_KEY'),

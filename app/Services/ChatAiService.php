@@ -297,10 +297,18 @@ PROMPT;
     public function generateTitle(string $content): ?string
     {
         try {
-            // Extract just the core topic — strip context prefixes
-            $cleaned = preg_replace('/^(Potřebuji pomoct.*?\.\s*)/su', '', $content);
-            $cleaned = preg_replace('/^(Kurz:.*?\n|Lekce:.*?\n|Obsah úlohy:.*?\n|Nápověda říká:.*?\n|Podrobnější vysvětlení:.*?\n|Můžeš mi to.*?\n)/mu', '', $cleaned ?? $content);
-            $truncated = mb_substr(trim($cleaned ?? $content), 0, 200);
+            // Extract the core topic to summarize.
+            // Chats opened from an exercise/hint send a structured context blob;
+            // its "Obsah úlohy:" field is the actual task and makes a far better
+            // title than the hint text (which previously leaked through and got
+            // echoed/truncated into nonsense like "Zdá se, že jsi zapomněl přilož").
+            // Prefer that task statement; otherwise use the message as-is.
+            if (preg_match('/Obsah úlohy:\s*(.+?)(?=\n(?:Otázka s možnostmi|Nápověda říká|Podrobnější vysvětlení|Můj dotaz|Můžeš mi)|$)/su', $content, $m)) {
+                $topic = trim($m[1]);
+            } else {
+                $topic = trim(preg_replace('/^Potřebuji pomoct.*?\.\s*/su', '', $content) ?? $content);
+            }
+            $truncated = mb_substr($topic !== '' ? $topic : trim($content), 0, 200);
 
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . config('chat.api_key'),
@@ -328,7 +336,7 @@ PROMPT;
                             'content' => $truncated,
                         ],
                     ],
-                    'max_tokens' => 15,
+                    'max_tokens' => 24,
                     'temperature' => 0.2,
                 ]);
 

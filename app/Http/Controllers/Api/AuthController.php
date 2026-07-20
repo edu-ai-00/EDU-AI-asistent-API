@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Models\VerificationCode;
+use App\Services\UserMergeService;
 use App\Support\SessionTokens;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
@@ -210,6 +211,20 @@ class AuthController extends Controller
             ], 401);
         }
 
+        // Allow the client to change the session mode on refresh. The
+        // shared-device banner's "this is my device" action converts a shared
+        // session to a persistent one (BR-CAQQW2). When the param is absent,
+        // preserve the current mode — automated token rotation must not alter
+        // it. Entering shared mode re-anchors the 8h cap; leaving it drops the
+        // anchor (persistent sessions are uncapped).
+        if ($request->has('shared_device')) {
+            $requestedShared = $request->boolean('shared_device');
+            if ($requestedShared !== $shared) {
+                $shared = $requestedShared;
+                $sessionStart = $shared ? now() : null;
+            }
+        }
+
         $issued = SessionTokens::reissue($user, $shared, $sessionStart, $name);
         $current->delete();
 
@@ -294,7 +309,7 @@ class AuthController extends Controller
      *
      * POST /api/guest/claim
      */
-    public function claimGuestAccount(Request $request): JsonResponse
+    public function claimGuestAccount(Request $request, UserMergeService $mergeService): JsonResponse
     {
         $user = $request->user();
 
@@ -329,13 +344,46 @@ class AuthController extends Controller
             ], 403);
         }
 
-        // Ensure no other user already has this email
-        if (User::where('email', $email)->where('id', '!=', $user->id)->exists()) {
+        // If the verified email already belongs to another full account, fold
+        // this guest into that account instead of rejecting. The recent
+        // verification proves the caller controls the email, so its in-progress
+        // courses/progress are merged into the existing profile rather than
+        // orphaned on the guest row (BR-4FTCFH).
+        $existing = User::where('email', $email)->where('id', '!=', $user->id)->first();
+        if ($existing) {
+            $merge = $mergeService->absorbGuest($user, $existing);
+
+            if ($merge === null) {
+                // Target cannot accept the merge (e.g. admin/teacher or already
+                // merged) — fall back to the original conflict response.
+                return response()->json([
+                    'success' => false,
+                    'error' => 'email_taken',
+                    'message' => 'This email is already associated with another account.',
+                ], 409);
+            }
+
+            $existing->refresh();
+            $issued = SessionTokens::issueLogin($existing, $request);
+
             return response()->json([
-                'success' => false,
-                'error' => 'email_taken',
-                'message' => 'This email is already associated with another account.',
-            ], 409);
+                'success' => true,
+                'is_new_user' => false,
+                'merged' => true,
+                'user' => [
+                    'id' => $existing->id,
+                    'name' => $existing->name,
+                    'email' => $existing->email,
+                    'avatar_index' => $existing->avatar_index,
+                    'selected_subjects' => $existing->selected_subjects,
+                    'email_verified_at' => $existing->email_verified_at,
+                ],
+                'token' => $issued['plainTextToken'],
+                'token_type' => 'Bearer',
+                'expires_at' => $issued['expiresAt']?->toIso8601String(),
+                'shared_device' => $issued['sharedDevice'],
+                'session_started_at' => $issued['sessionStartedAt']?->toIso8601String(),
+            ]);
         }
 
         $user->update([

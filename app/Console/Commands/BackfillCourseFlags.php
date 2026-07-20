@@ -3,14 +3,15 @@
 namespace App\Console\Commands;
 
 use App\Models\Course;
+use App\Services\CourseStorageService;
 use Illuminate\Console\Command;
 
 class BackfillCourseFlags extends Command
 {
     protected $signature = 'courses:backfill-flags';
-    protected $description = 'Backfill starts_with_quiz, only_once, logged_only, quiz_evaluate, and pin from stored course JSON data';
+    protected $description = 'Backfill display metadata (lesson_count, estimated_minutes, description, emoji, author) and flags (starts_with_quiz, only_once, logged_only, quiz_evaluate, pin) from stored course JSON data';
 
-    public function handle(): int
+    public function handle(CourseStorageService $storageService): int
     {
         $courses = Course::whereNotNull('data')->get();
 
@@ -45,6 +46,33 @@ class BackfillCourseFlags extends Command
 
             if (isset($data['quiz_evaluate'])) {
                 $course->quiz_evaluate = (bool) $data['quiz_evaluate'];
+                $changed = true;
+            }
+
+            // Backfill denormalized display metadata so listings show course
+            // params for not-yet-downloaded courses (BR-8SPECV). Only fill
+            // lesson_count/estimated_minutes when currently empty, and only set
+            // description/emoji/author from data when non-null.
+            $display = $storageService->extractDisplayMetadata($data);
+
+            if (!$course->lesson_count && $display['lesson_count'] > 0) {
+                $course->lesson_count = $display['lesson_count'];
+                $changed = true;
+            }
+            if (!$course->estimated_minutes && $display['estimated_minutes'] > 0) {
+                $course->estimated_minutes = $display['estimated_minutes'];
+                $changed = true;
+            }
+            if (!$course->description && $display['description'] !== null) {
+                $course->description = $display['description'];
+                $changed = true;
+            }
+            if (!$course->emoji && $display['emoji'] !== null) {
+                $course->emoji = $display['emoji'];
+                $changed = true;
+            }
+            if (!$course->author && $display['author'] !== null) {
+                $course->author = $display['author'];
                 $changed = true;
             }
 

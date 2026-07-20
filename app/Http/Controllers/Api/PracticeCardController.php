@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\PracticeCard;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class PracticeCardController extends Controller
 {
@@ -82,40 +83,57 @@ class PracticeCardController extends Controller
         ]);
 
         $userId = $request->user()->id;
-        $results = [];
 
+        // Collapse duplicate block_ids within a single payload before writing.
+        // The table is unique on (user_id, block_id), so a repeated block_id
+        // would otherwise cause redundant upserts and report the same card as
+        // both "created" and "updated". Last occurrence wins, matching the
+        // last-write-wins order of the per-row upserts below.
+        $cardsByBlock = [];
         foreach ($validated['cards'] as $entry) {
-            $card = PracticeCard::updateOrCreate(
-                [
-                    'user_id' => $userId,
-                    'block_id' => $entry['block_id'],
-                ],
-                [
-                    'course_id' => $entry['course_id'],
-                    'lesson_id' => $entry['lesson_id'],
-                    'source_type' => $entry['source_type'],
-                    'state' => $entry['state'] ?? 0,
-                    'due_date' => $entry['due_date'] ?? now(),
-                    'stability' => $entry['stability'] ?? 0.0,
-                    'difficulty' => $entry['difficulty'] ?? 0.0,
-                    'reps' => $entry['reps'] ?? 0,
-                    'lapses' => $entry['lapses'] ?? 0,
-                    'scheduled_days' => $entry['scheduled_days'] ?? 0,
-                    'elapsed_days' => $entry['elapsed_days'] ?? 0,
-                    'last_review' => $entry['last_review'] ?? null,
-                    'weight' => $entry['weight'] ?? 5.0,
-                    'avg_time_sec' => $entry['avg_time_sec'] ?? 20,
-                    'skip_condition' => $entry['skip_condition'] ?? null,
-                    'is_active' => $entry['is_active'] ?? true,
-                ]
-            );
-
-            $results[] = [
-                'id' => $card->id,
-                'block_id' => $card->block_id,
-                'status' => $card->wasRecentlyCreated ? 'created' : 'updated',
-            ];
+            $cardsByBlock[$entry['block_id']] = $entry;
         }
+
+        // Upsert the batch atomically so a mid-batch failure can't leave the
+        // user's practice deck half-written.
+        $results = DB::transaction(function () use ($cardsByBlock, $userId) {
+            $out = [];
+
+            foreach ($cardsByBlock as $entry) {
+                $card = PracticeCard::updateOrCreate(
+                    [
+                        'user_id' => $userId,
+                        'block_id' => $entry['block_id'],
+                    ],
+                    [
+                        'course_id' => $entry['course_id'],
+                        'lesson_id' => $entry['lesson_id'],
+                        'source_type' => $entry['source_type'],
+                        'state' => $entry['state'] ?? 0,
+                        'due_date' => $entry['due_date'] ?? now(),
+                        'stability' => $entry['stability'] ?? 0.0,
+                        'difficulty' => $entry['difficulty'] ?? 0.0,
+                        'reps' => $entry['reps'] ?? 0,
+                        'lapses' => $entry['lapses'] ?? 0,
+                        'scheduled_days' => $entry['scheduled_days'] ?? 0,
+                        'elapsed_days' => $entry['elapsed_days'] ?? 0,
+                        'last_review' => $entry['last_review'] ?? null,
+                        'weight' => $entry['weight'] ?? 5.0,
+                        'avg_time_sec' => $entry['avg_time_sec'] ?? 20,
+                        'skip_condition' => $entry['skip_condition'] ?? null,
+                        'is_active' => $entry['is_active'] ?? true,
+                    ]
+                );
+
+                $out[] = [
+                    'id' => $card->id,
+                    'block_id' => $card->block_id,
+                    'status' => $card->wasRecentlyCreated ? 'created' : 'updated',
+                ];
+            }
+
+            return $out;
+        });
 
         return response()->json([
             'data' => $results,

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Http\Controllers\Concerns\FormatsExportTiming;
 use App\Http\Controllers\Controller;
 use App\Models\BlockStat;
 use App\Models\Course;
@@ -13,6 +14,8 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class EloInteractionController extends Controller
 {
+    use FormatsExportTiming;
+
     /**
      * Log a single ELO interaction.
      * Optionally increments block_stats.item_pocet via item_pocet_delta.
@@ -34,6 +37,9 @@ class EloInteractionController extends Controller
             'updated_indices.*' => 'nullable|integer',
             'item_pocet_delta' => 'nullable|array',
             'item_pocet_delta.*' => 'nullable|integer',
+            'opened_at' => 'nullable|date',
+            'confirmed_at' => 'nullable|date',
+            'duration_ms' => 'nullable|integer|min:0',
         ]);
 
         $interaction = EloInteraction::create([
@@ -45,10 +51,17 @@ class EloInteractionController extends Controller
             'profil_elo_snapshot' => $validated['profil_elo_snapshot'] ?? null,
             'elo_vector_snapshot' => $validated['elo_vector_snapshot'] ?? null,
             'updated_indices' => $validated['updated_indices'] ?? null,
+            'opened_at' => $validated['opened_at'] ?? null,
+            'confirmed_at' => $validated['confirmed_at'] ?? null,
+            'duration_ms' => $this->resolveDuration(
+                $validated['duration_ms'] ?? null,
+                $validated['opened_at'] ?? null,
+                $validated['confirmed_at'] ?? null,
+            ),
         ]);
 
         // Increment block stats if delta provided
-        if (!empty($validated['item_pocet_delta'])) {
+        if (! empty($validated['item_pocet_delta'])) {
             $this->applyItemPocetDelta($validated['block_id'], $validated['item_pocet_delta']);
         }
 
@@ -80,6 +93,9 @@ class EloInteractionController extends Controller
             'interactions.*.updated_indices.*' => 'nullable|integer',
             'interactions.*.item_pocet_delta' => 'nullable|array',
             'interactions.*.item_pocet_delta.*' => 'nullable|integer',
+            'interactions.*.opened_at' => 'nullable|date',
+            'interactions.*.confirmed_at' => 'nullable|date',
+            'interactions.*.duration_ms' => 'nullable|integer|min:0',
         ]);
 
         $userId = $request->user()->id;
@@ -95,10 +111,17 @@ class EloInteractionController extends Controller
                 'profil_elo_snapshot' => $entry['profil_elo_snapshot'] ?? null,
                 'elo_vector_snapshot' => $entry['elo_vector_snapshot'] ?? null,
                 'updated_indices' => $entry['updated_indices'] ?? null,
+                'opened_at' => $entry['opened_at'] ?? null,
+                'confirmed_at' => $entry['confirmed_at'] ?? null,
+                'duration_ms' => $this->resolveDuration(
+                    $entry['duration_ms'] ?? null,
+                    $entry['opened_at'] ?? null,
+                    $entry['confirmed_at'] ?? null,
+                ),
             ]);
 
             // Increment block stats if delta provided
-            if (!empty($entry['item_pocet_delta'])) {
+            if (! empty($entry['item_pocet_delta'])) {
                 $this->applyItemPocetDelta($entry['block_id'], $entry['item_pocet_delta']);
             }
 
@@ -191,6 +214,19 @@ class EloInteractionController extends Controller
      * Export ELO interactions for a course as CSV.
      *
      * GET /api/admin/elo/interactions/course/{courseId}/export
+     *
+     * The export emits one row per block traversal, combining two sources:
+     *
+     *   1. `elo_interactions` — every block that produced an ELO update
+     *      (question / evaluation blocks, lesson + quiz).
+     *   2. `user_courses.progress_data.lessons[].block_timestamps` — every
+     *      lesson block the student opened, including pure display / content
+     *      blocks that don't carry an ELO score.
+     *
+     * Rows from (2) that have no matching ELO interaction still appear so
+     * the export reflects the full lesson traversal. Timing columns prefer
+     * the dedicated columns on `elo_interactions` (populated by the
+     * client + backfill) and fall back to `progress_data` when needed.
      */
     public function exportCsv(string $courseId): StreamedResponse
     {
@@ -199,34 +235,46 @@ class EloInteractionController extends Controller
             ->orderBy('created_at', 'asc')
             ->get();
 
-        // Build a lookup of block_timestamps from user_courses.progress_data
-        // keyed by "{user_id}:{block_id}" → { opened_at, confirmed_at }
-        $userIds = $interactions->pluck('user_id')->unique()->values()->all();
-        $timestampMap = [];
+        // Resolve the course's integer PK once so we can join user_courses.
+        $courseRecord = Course::where('course_id', $courseId)->first();
+        $courseIntId = $courseRecord?->id;
 
-        if (!empty($userIds)) {
-            // user_courses.course_id is an integer FK to courses.id,
-            // but $courseId is the string course_id field — resolve it.
-            $courseRecord = Course::where('course_id', $courseId)->first();
-            $courseIntId = $courseRecord?->id;
+        // Collect every user that has either ELO data OR lesson progress
+        // for this course — both are inputs to the export.
+        $interactionUserIds = $interactions->pluck('user_id')->unique()->values()->all();
+        $progressUserIds = $courseIntId
+            ? UserCourse::where('course_id', $courseIntId)->pluck('user_id')->all()
+            : [];
+        $userIds = array_values(array_unique(array_merge($interactionUserIds, $progressUserIds)));
 
-            $userCourses = $courseIntId
-                ? UserCourse::where('course_id', $courseIntId)
-                    ->whereIn('user_id', $userIds)
-                    ->get()
-                : collect();
+        // Pre-load users for classroom_id display.
+        $userMap = [];
+        if (! empty($userIds)) {
+            foreach (\App\Models\User::whereIn('id', $userIds)->get(['id', 'classroom_id']) as $u) {
+                $userMap[$u->id] = $u;
+            }
+        }
+
+        // Build the lesson traversal map:
+        //   "{user_id}:{block_id}" → { opened_at, confirmed_at }
+        // sourced from user_courses.progress_data.lessons[].block_timestamps.
+        $lessonTraversal = [];
+        if ($courseIntId !== null && ! empty($userIds)) {
+            $userCourses = UserCourse::where('course_id', $courseIntId)
+                ->whereIn('user_id', $userIds)
+                ->get();
 
             foreach ($userCourses as $uc) {
                 $progressData = $uc->progress_data;
-                if (!is_array($progressData) || empty($progressData['lessons'])) {
+                if (! is_array($progressData) || empty($progressData['lessons'])) {
                     continue;
                 }
 
                 foreach ($progressData['lessons'] as $lessonData) {
                     $blockTimestamps = $lessonData['block_timestamps'] ?? [];
                     foreach ($blockTimestamps as $blockId => $ts) {
-                        $key = $uc->user_id . ':' . $blockId;
-                        $timestampMap[$key] = $ts;
+                        $key = $uc->user_id.':'.$blockId;
+                        $lessonTraversal[$key] = $ts;
                     }
                 }
             }
@@ -250,9 +298,12 @@ class EloInteractionController extends Controller
             'Doba',
         ];
 
-        $filename = 'elo-export-' . $courseId . '-' . now()->format('Y-m-d') . '.csv';
+        $filename = 'elo-export-'.$courseId.'-'.now()->format('Y-m-d').'.csv';
 
-        return response()->streamDownload(function () use ($interactions, $timestampMap, $sourceLabels, $headers) {
+        return response()->streamDownload(function () use (
+            $interactions, $lessonTraversal,
+            $sourceLabels, $headers, $userMap, $courseId
+        ) {
             $handle = fopen('php://output', 'w');
 
             // BOM for Excel UTF-8 compatibility
@@ -261,50 +312,123 @@ class EloInteractionController extends Controller
             // Write header with tab separator
             fputcsv($handle, $headers, "\t");
 
+            // ── Pass 1: emit one row per ELO interaction (lesson + quiz). ──
+            // Track which (user, block, lesson-source) pairs we've already
+            // written so Pass 2 doesn't duplicate them.
+            $emittedLessonKeys = [];
+
             foreach ($interactions as $i) {
-                $tsKey = $i->user_id . ':' . $i->block_id;
-                $ts = $timestampMap[$tsKey] ?? null;
+                $tsKey = $i->user_id.':'.$i->block_id;
+                $progressTs = $lessonTraversal[$tsKey] ?? null;
 
-                $openedAt = null;
-                $confirmedAt = null;
-                $duration = null;
+                // Prefer the dedicated columns on elo_interactions, fall back
+                // to the progress_data block_timestamps. created_at remains
+                // the final fallback for confirmed_at.
+                $openedAt = $i->opened_at
+                    ?? ($progressTs && isset($progressTs['opened_at'])
+                        ? \Carbon\Carbon::parse($progressTs['opened_at'])
+                        : null);
 
-                if ($ts) {
-                    $openedAt = isset($ts['opened_at']) ? \Carbon\Carbon::parse($ts['opened_at']) : null;
-                    $confirmedAt = isset($ts['confirmed_at']) ? \Carbon\Carbon::parse($ts['confirmed_at']) : null;
-                } else {
-                    // Fallback: use created_at as confirmed time
-                    $confirmedAt = $i->created_at;
-                }
+                $confirmedAt = $i->confirmed_at
+                    ?? ($progressTs && isset($progressTs['confirmed_at'])
+                        ? \Carbon\Carbon::parse($progressTs['confirmed_at'])
+                        : $i->created_at);
 
-                if ($openedAt && $confirmedAt) {
-                    $diffSeconds = $confirmedAt->diffInSeconds($openedAt);
-                    $duration = $diffSeconds . 's';
-                }
+                $duration = $this->formatDurationCell($i->duration_ms, $openedAt, $confirmedAt);
 
-                $row = [
+                fputcsv($handle, [
                     $i->user_id,
                     $i->user->classroom_id ?? '',
                     $i->block_id,
                     $i->course_id,
                     $sourceLabels[$i->source] ?? $i->source ?? '',
-                    round($i->score * 100) . '%',
+                    round($i->score * 100).'%',
                     is_array($i->updated_indices) ? implode(', ', $i->updated_indices) : '',
                     is_array($i->profil_elo_snapshot) ? implode(', ', $i->profil_elo_snapshot) : '',
                     is_array($i->elo_vector_snapshot) ? implode(', ', $i->elo_vector_snapshot) : '',
-                    $i->created_at->format('j.n.Y'),
+                    ($confirmedAt ?? $i->created_at)->format('j.n.Y'),
                     $openedAt ? $openedAt->format('H:i:s') : '',
                     $confirmedAt ? $confirmedAt->format('H:i:s') : '',
-                    $duration ?? '',
-                ];
+                    $duration,
+                ], "\t");
 
-                fputcsv($handle, $row, "\t");
+                if (($i->source ?? 'lesson') === 'lesson') {
+                    $emittedLessonKeys[$tsKey] = true;
+                }
+            }
+
+            // ── Pass 2: emit traversal rows for lesson blocks that had no
+            // ELO interaction (display / content blocks). These give the
+            // full lesson traversal picture, with timing but no score / ELO. ──
+            foreach ($lessonTraversal as $key => $ts) {
+                if (isset($emittedLessonKeys[$key])) {
+                    continue;
+                }
+
+                [$userId, $blockId] = explode(':', $key, 2);
+                $userId = (int) $userId;
+
+                $openedAt = isset($ts['opened_at']) ? \Carbon\Carbon::parse($ts['opened_at']) : null;
+                $confirmedAt = isset($ts['confirmed_at']) ? \Carbon\Carbon::parse($ts['confirmed_at']) : null;
+
+                // Skip rows that have no usable timing at all — they would be
+                // noise without any answer / score data attached.
+                if ($openedAt === null && $confirmedAt === null) {
+                    continue;
+                }
+
+                $duration = $this->formatDurationCell(null, $openedAt, $confirmedAt);
+                $dayAnchor = $confirmedAt ?? $openedAt;
+
+                fputcsv($handle, [
+                    $userId,
+                    $userMap[$userId]->classroom_id ?? '',
+                    $blockId,
+                    $courseId,
+                    $sourceLabels['lesson'],
+                    '', // no score
+                    '', // no updated_indices
+                    '', // no profil_elo_snapshot
+                    '', // no elo_vector_snapshot
+                    $dayAnchor ? $dayAnchor->format('j.n.Y') : '',
+                    $openedAt ? $openedAt->format('H:i:s') : '',
+                    $confirmedAt ? $confirmedAt->format('H:i:s') : '',
+                    $duration,
+                ], "\t");
             }
 
             fclose($handle);
         }, $filename, [
             'Content-Type' => 'text/tab-separated-values; charset=UTF-8',
         ]);
+    }
+
+    /**
+     * Resolve the final `duration_ms` value from the client payload.
+     *
+     * If the client passes an explicit `duration_ms`, trust it. Otherwise
+     * compute it from `opened_at` and `confirmed_at` so callers can supply
+     * just the two ends and let the server derive the delta.
+     */
+    private function resolveDuration(?int $duration, ?string $openedAt, ?string $confirmedAt): ?int
+    {
+        if ($duration !== null) {
+            return $duration;
+        }
+
+        if ($openedAt !== null && $confirmedAt !== null) {
+            try {
+                $opened = \Carbon\Carbon::parse($openedAt);
+                $confirmed = \Carbon\Carbon::parse($confirmedAt);
+                $delta = $confirmed->diffInMilliseconds($opened);
+
+                return $delta >= 0 ? (int) $delta : null;
+            } catch (\Throwable) {
+                return null;
+            }
+        }
+
+        return null;
     }
 
     /**

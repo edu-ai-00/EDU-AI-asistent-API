@@ -46,7 +46,7 @@ class BookmarkController extends Controller
     {
         $validated = $request->validate([
             'course_id' => 'required|string|max:255',
-            'lesson_id' => 'required|string|max:255',
+            'lesson_id' => 'nullable|string|max:255',
             'block_id' => 'required|string|max:255',
             'note' => 'nullable|string|max:500',
         ]);
@@ -55,7 +55,7 @@ class BookmarkController extends Controller
             [
                 'user_id' => $request->user()->id,
                 'course_id' => $validated['course_id'],
-                'lesson_id' => $validated['lesson_id'],
+                'lesson_id' => $validated['lesson_id'] ?? '',
                 'block_id' => $validated['block_id'],
             ],
             [
@@ -79,7 +79,7 @@ class BookmarkController extends Controller
         $validated = $request->validate([
             'bookmarks' => 'required|array',
             'bookmarks.*.course_id' => 'required|string|max:255',
-            'bookmarks.*.lesson_id' => 'required|string|max:255',
+            'bookmarks.*.lesson_id' => 'nullable|string|max:255',
             'bookmarks.*.block_id' => 'required|string|max:255',
             'bookmarks.*.note' => 'nullable|string|max:500',
         ]);
@@ -92,7 +92,7 @@ class BookmarkController extends Controller
                 [
                     'user_id' => $userId,
                     'course_id' => $entry['course_id'],
-                    'lesson_id' => $entry['lesson_id'],
+                    'lesson_id' => $entry['lesson_id'] ?? '',
                     'block_id' => $entry['block_id'],
                 ],
                 [

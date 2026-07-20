@@ -138,12 +138,52 @@ class CourseStorageService
     }
 
     /**
+     * Extract only the denormalized display metadata from course JSON.
+     *
+     * Unlike extractMetadata(), this does NOT return identity/versioning fields
+     * (course_id, name, version, status, language) so it can be safely merged
+     * over a store/update payload without clobbering those. Keeps the course
+     * listing (which hides the full `data` column) able to show description,
+     * lesson count and duration for not-yet-downloaded courses.
+     *
+     * @param array $courseData Full course JSON data
+     * @return array Denormalized display fields for the database
+     */
+    public function extractDisplayMetadata(array $courseData): array
+    {
+        $lessonCount = isset($courseData['lessons']) ? count($courseData['lessons']) : 0;
+
+        // Estimate duration: each lesson ~15 minutes as default
+        $estimatedMinutes = $lessonCount * 15;
+        if (isset($courseData['estimated_minutes'])) {
+            $estimatedMinutes = $courseData['estimated_minutes'];
+        }
+
+        return [
+            'description' => $courseData['description'] ?? null,
+            'author' => $courseData['author'] ?? null,
+            // Raw value only (no emoji auto-detection): callers merge this over
+            // an existing record, so a detected default would clobber a
+            // manually-set emoji on update. detectEmoji() stays in the
+            // new-course paths (upload/store) that want a heuristic default.
+            'emoji' => $courseData['emoji'] ?? null,
+            'lesson_count' => $lessonCount,
+            'estimated_minutes' => $estimatedMinutes,
+            'only_quiz' => (bool) ($courseData['only_quiz'] ?? false),
+            'starts_with_quiz' => (bool) ($courseData['only_quiz'] ?? false) ? true : (bool) ($courseData['starts_with_quiz'] ?? false),
+            'only_once' => (bool) ($courseData['only_once'] ?? false),
+            'logged_only' => (bool) ($courseData['logged_only'] ?? false),
+            'quiz_evaluate' => (bool) ($courseData['quiz_evaluate'] ?? false),
+        ];
+    }
+
+    /**
      * Attempt to detect an appropriate emoji from course content.
      *
      * @param array $courseData Course data
      * @return string|null Detected emoji or null
      */
-    protected function detectEmoji(array $courseData): ?string
+    public function detectEmoji(array $courseData): ?string
     {
         $name = strtolower($courseData['name'] ?? '');
         $courseId = strtolower($courseData['course_id'] ?? '');

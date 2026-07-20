@@ -12,13 +12,13 @@ return new class extends Migration
      */
     public function up(): void
     {
-        // Make password nullable using raw SQL (PostgreSQL syntax)
-        // Use try-catch in case it's already nullable
-        try {
-            DB::statement('ALTER TABLE users ALTER COLUMN password DROP NOT NULL');
-        } catch (\Exception $e) {
-            // Column might already be nullable, ignore error
-        }
+        // Make password nullable (social/guest/verified-email users have none).
+        // Uses a DB-agnostic column change (doctrine/dbal) so it applies on
+        // SQLite too — the previous raw PostgreSQL ALTER silently no-op'd
+        // elsewhere, leaving the column NOT NULL in the test database.
+        Schema::table('users', function (Blueprint $table) {
+            $table->string('password')->nullable()->change();
+        });
 
         // Add profile fields if they don't exist
         if (!Schema::hasColumn('users', 'avatar_index')) {
