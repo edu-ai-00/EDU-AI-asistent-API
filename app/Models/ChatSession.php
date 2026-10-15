@@ -13,6 +13,7 @@ class ChatSession extends Model
         'title',
         'persona',
         'last_message_at',
+        'rag_conversation_id',
     ];
 
     protected function casts(): array

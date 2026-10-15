@@ -10,6 +10,7 @@ use App\Services\UserMergeService;
 use App\Support\SessionTokens;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\Mail;
 
 class EmailVerificationController extends Controller
@@ -18,6 +19,12 @@ class EmailVerificationController extends Controller
      * Check if an email already exists in the system.
      *
      * POST /api/email/check
+     *
+     * The app asks this before sending a code: an unknown email is a
+     * registration and meets the age gate first (BR-J2WJEQ). It must match
+     * the way verify() finds the account — case-insensitively — or a
+     * capitalised address of an existing user is asked for their age, and a
+     * "no" would send them into the parental consent flow.
      */
     public function check(Request $request): JsonResponse
     {
@@ -25,7 +32,7 @@ class EmailVerificationController extends Controller
             'email' => 'required|email',
         ]);
 
-        $exists = User::where('email', $request->email)->exists();
+        $exists = User::whereRaw('LOWER(email) = ?', [strtolower(trim($request->email))])->exists();
 
         return response()->json([
             'exists' => $exists,
@@ -60,7 +67,9 @@ class EmailVerificationController extends Controller
 
         // Send email
         try {
-            Mail::to($email)->send(new VerificationCodeMail(
+            // Pin the locale explicitly rather than relying on the ambient
+            // one: it is carried into the job if this send is ever queued.
+            Mail::to($email)->locale(App::getLocale())->send(new VerificationCodeMail(
                 code: $verificationCode->code,
                 expiresInMinutes: 10,
             ));
@@ -129,6 +138,9 @@ class EmailVerificationController extends Controller
         // Check if user exists and return token if so (case-insensitive)
         $user = User::whereRaw('LOWER(email) = ?', [strtolower($email)])->first();
         if ($user) {
+            // Before the writes and the guest merge below (BR-Q3ZJ6Q).
+            $user->ensureCanSignIn();
+
             $user->email_verified_at = now();
             $user->save();
 

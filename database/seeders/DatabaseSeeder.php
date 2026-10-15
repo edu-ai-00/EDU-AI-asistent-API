@@ -24,5 +24,11 @@ class DatabaseSeeder extends Seeder
 
         // Seed demo course
         $this->call(DemoCourseSeeder::class);
+
+        // Seed mini games
+        $this->call(MiniGameSeeder::class);
+
+        // Seed the avatar cosmetics catalog
+        $this->call(AvatarItemSeeder::class);
     }
 }

@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Facades\DB;
 
 class UserStats extends Model
 {
@@ -32,6 +33,8 @@ class UserStats extends Model
         'last_streak_date',
         'daily_xp_date',
         'daily_xp_amount',
+        'coins_earned',
+        'coins_balance',
     ];
 
     /**
@@ -50,6 +53,8 @@ class UserStats extends Model
             'last_streak_date' => 'date',
             'daily_xp_date' => 'date',
             'daily_xp_amount' => 'integer',
+            'coins_earned' => 'integer',
+            'coins_balance' => 'integer',
         ];
     }
 
@@ -84,5 +89,26 @@ class UserStats extends Model
                 'achievements_count' => 0,
             ]
         );
+    }
+
+    /**
+     * Credit EDUX coins to a user's wallet.
+     *
+     * Both counters move together — a coin is earned and spendable at the same
+     * moment. Written as an atomic increment rather than read-modify-write:
+     * a run finishing on the phone while a lesson is synced from the tablet
+     * would otherwise lose one of the two credits.
+     */
+    public static function creditCoins(int $userId, int $amount): void
+    {
+        if ($amount <= 0) {
+            return;
+        }
+
+        self::getOrCreateForUser($userId);
+
+        self::where('user_id', $userId)->increment('coins_earned', $amount, [
+            'coins_balance' => DB::raw('coins_balance + '.$amount),
+        ]);
     }
 }

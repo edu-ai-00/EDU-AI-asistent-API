@@ -32,5 +32,7 @@
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="NIGHTWATCH_ENABLED" value="false"/>
         <env name="ADMIN_EMAILS" value=""/>
+        <!-- AI Course Assistant has no fallback for this on purpose (BR-D4PE8R). -->
+        <env name="ADMIN_APP_URL" value="https://admin.test"/>
     </php>
 </phpunit>

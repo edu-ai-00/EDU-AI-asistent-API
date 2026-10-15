@@ -60,12 +60,15 @@ return [
     |
     | Admin tokens (created with the 'admin' ability) are issued with this
     | per-token expires_at value, overriding the global expiration above.
-    | Default is 8 hours — short enough to limit blast radius if a token
-    | is leaked. Clients refresh via POST /api/admin/auth/refresh.
+    | Default is 48 hours — still far short of the app's 30 days, to limit
+    | blast radius if a token is leaked. The admin panel refreshes via
+    | POST /api/admin/auth/refresh while it is in use, so this is how long
+    | a session survives without any action: the client asked for a sign-in
+    | that holds 48 hours from the last action (BR-CAMYRM; was 8 hours).
     |
     */
 
-    'admin_expiration_minutes' => env('SANCTUM_ADMIN_TOKEN_EXPIRATION_MINUTES', 60 * 8),
+    'admin_expiration_minutes' => env('SANCTUM_ADMIN_TOKEN_EXPIRATION_MINUTES', 60 * 48),
 
     /*
     |--------------------------------------------------------------------------

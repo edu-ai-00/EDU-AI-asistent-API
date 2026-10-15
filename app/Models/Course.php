@@ -21,12 +21,15 @@ class Course extends Model
      */
     protected $fillable = [
         'course_id',
+        'translation_key',
+        'structure_hash',
         'pin',
         'starts_with_quiz',
         'only_once',
         'logged_only',
         'quiz_evaluate',
         'only_quiz',
+        'open_all_lessons',
         'name',
         'description',
         'author',
@@ -56,6 +59,7 @@ class Course extends Model
 
     protected $appends = [
         'code',
+        'header_image',
     ];
 
     /**
@@ -77,6 +81,7 @@ class Course extends Model
             'logged_only' => 'boolean',
             'quiz_evaluate' => 'boolean',
             'only_quiz' => 'boolean',
+            'open_all_lessons' => 'boolean',
         ];
     }
 
@@ -112,6 +117,33 @@ class Course extends Model
     }
 
     /**
+     * The other language variants of this course (BR-AYACEK).
+     *
+     * Variants share a `translation_key` but keep separate `course_id`s, so
+     * this is a self-join rather than a relation on the primary key.
+     */
+    public function translations()
+    {
+        return static::query()
+            ->where('translation_key', $this->translation_key ?: $this->course_id)
+            ->where('id', '!=', $this->id);
+    }
+
+    /**
+     * Does this variant's structure still agree with the given sibling?
+     * Unknown (null) fingerprints are treated as agreeing — a course that has
+     * never been fingerprinted must not block anyone.
+     */
+    public function structureAgreesWith(self $other): bool
+    {
+        if ($this->structure_hash === null || $other->structure_hash === null) {
+            return true;
+        }
+
+        return $this->structure_hash === $other->structure_hash;
+    }
+
+    /**
      * Scope for courses updated since a given timestamp.
      */
     public function scopeUpdatedSince($query, string $timestamp)
@@ -128,6 +160,28 @@ class Course extends Model
     public function getCodeAttribute(): ?string
     {
         return $this->pin;
+    }
+
+    /**
+     * Course cover for listings (BR-YKYXC6).
+     *
+     * The cover lives in the course JSON (`data.header_image`), and `data` is
+     * hidden from listing payloads — without this the app could only show a
+     * cover for courses it had already downloaded. Null when the column was
+     * not selected (checkUpdates) or no cover is set.
+     */
+    public function getHeaderImageAttribute(): ?array
+    {
+        $image = $this->data['header_image'] ?? null;
+
+        if (!is_array($image) || empty($image['url'])) {
+            return null;
+        }
+
+        return [
+            'url' => $image['url'],
+            'alt' => $image['alt'] ?? null,
+        ];
     }
 
     public function hasR2File(): bool

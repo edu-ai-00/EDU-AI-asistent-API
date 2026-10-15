@@ -36,9 +36,27 @@ class UserStatsController extends Controller
             'achievements_count' => 'sometimes|integer|min:0',
             'daily_xp_date' => 'sometimes|nullable|date',
             'daily_xp_amount' => 'sometimes|integer|min:0',
+            'coins_earned' => 'sometimes|integer|min:0',
+            'coins_balance' => 'sometimes|integer|min:0',
         ]);
 
         $stats = UserStats::getOrCreateForUser($request->user()->id);
+
+        // XP (and its derivatives) only ever grow. A client that synced before
+        // a profile merge may push a stale, lower total and would silently
+        // wipe the merged sum — keep the higher value instead. Streak and
+        // daily-XP fields are excluded: those legitimately reset.
+        //
+        // The coin counters are on the list for the same reason, `coins_balance`
+        // included: nothing on the device spends a coin, so a lower balance
+        // from a client is always a stale one. Spending happens server-side,
+        // and this guard has to be revisited when it does (BR-HK9828).
+        foreach (['xp_points', 'level', 'achievements_count', 'coins_earned', 'coins_balance'] as $monotonic) {
+            if (isset($validated[$monotonic])) {
+                $validated[$monotonic] = max((int) $validated[$monotonic], (int) $stats->{$monotonic});
+            }
+        }
+
         $stats->update($validated);
 
         return response()->json([
@@ -63,6 +81,8 @@ class UserStatsController extends Controller
             'last_streak_date' => $stats->last_streak_date?->toDateString(),
             'daily_xp_date' => $stats->daily_xp_date?->toDateString(),
             'daily_xp_amount' => $stats->daily_xp_amount ?? 0,
+            'coins_earned' => $stats->coins_earned ?? 0,
+            'coins_balance' => $stats->coins_balance ?? 0,
             'created_at' => $stats->created_at->toIso8601String(),
             'updated_at' => $stats->updated_at->toIso8601String(),
         ];

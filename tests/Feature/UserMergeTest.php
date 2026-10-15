@@ -503,6 +503,33 @@ class UserMergeTest extends TestCase
         $this->service->merge($student->id, $otherAdmin->id, $this->admin->id);
     }
 
+    /**
+     * BR-8FDF37 C2: a minor's pseudonymous account has no email/OAuth
+     * identity, so absorbGuest() can never resolve one — but this
+     * admin-facing merge path takes arbitrary ids with no such structural
+     * protection. Without the guard, guardian_id survives finalizeSource()
+     * (only email is nulled), so the merged minor stays inside
+     * consent:purge-revoked's scope and the eraser hits user_merges'
+     * RESTRICT constraint when it tries to delete the account.
+     */
+    public function test_admin_cannot_merge_a_minor_as_source(): void
+    {
+        $minor = $this->makeStudent(['email' => null, 'is_minor' => true, 'login_code_hash' => str_repeat('a', 64)]);
+        $student = $this->makeStudent(['email' => 's2@example.test']);
+
+        $this->expectException(ValidationException::class);
+        $this->service->merge($minor->id, $student->id, $this->admin->id);
+    }
+
+    public function test_admin_cannot_merge_into_a_minor_target(): void
+    {
+        $student = $this->makePinStudent('SRCMIN');
+        $minor = $this->makeStudent(['email' => null, 'is_minor' => true, 'login_code_hash' => str_repeat('b', 64)]);
+
+        $this->expectException(ValidationException::class);
+        $this->service->merge($student->id, $minor->id, $this->admin->id);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // 17. test_cannot_merge_already_merged_user
     // ─────────────────────────────────────────────────────────────────────────

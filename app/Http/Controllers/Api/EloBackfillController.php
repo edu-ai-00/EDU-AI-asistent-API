@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\BlockStat;
 use App\Models\Course;
 use App\Models\EloInteraction;
 use App\Models\QuizAttempt;
@@ -11,6 +10,7 @@ use App\Models\UserCourse;
 use App\Models\UserEloProfile;
 use App\Models\UserProgress;
 use App\Services\EloEngine;
+use App\Services\TaskCalibrationService;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -18,6 +18,18 @@ use Illuminate\Support\Facades\DB;
 
 class EloBackfillController extends Controller
 {
+    public function __construct(private TaskCalibrationService $calibration)
+    {
+    }
+
+    /**
+     * Pilot 2 gaming floor: a lesson answer submitted sooner than this after
+     * the block was shown is a guess and moves no ELO. Mirrors
+     * GamingGuard.minimumThresholdSeconds, the floor the app's lessons use
+     * (gaming_filter.dart, BR-3N79C3).
+     */
+    private const GAMING_THRESHOLD_MS = 2000;
+
     /**
      * Preview backfill statistics for a course (dry run).
      *
@@ -55,6 +67,8 @@ class EloBackfillController extends Controller
         // Count existing interactions for this course
         $existingInteractions = EloInteraction::where('course_id', $courseId)->count();
 
+        $lessonTimestamps = $this->loadLessonBlockTimestamps($course->id, $userIds->all());
+
         // Build per-user stats
         $users = [];
         foreach ($userIds as $userId) {
@@ -72,6 +86,14 @@ class EloBackfillController extends Controller
             $pendingBlockIds = array_diff(
                 array_intersect($completedBlocks, $gpfBlockIds),
                 $existingForUser
+            );
+            // A guessed lesson answer never becomes an interaction (see
+            // processUser), so it is not pending either — the admin's confirm
+            // dialog promises exactly this count.
+            $pendingBlockIds = array_filter(
+                $pendingBlockIds,
+                fn ($blockId) => isset($userQuizScores[$blockId])
+                    || ! $this->isGamingLessonAttempt($lessonTimestamps[$userId.':'.$blockId] ?? null)
             );
 
             $user = DB::table('users')
@@ -104,6 +126,12 @@ class EloBackfillController extends Controller
 
     /**
      * Run the actual ELO backfill for a course.
+     *
+     * Creates the missing interaction rows and student profiles from lesson
+     * progress and quiz attempts. Task difficulty is no longer written here
+     * (BR-697NCA): once the rows exist, every block that gained one is
+     * recalibrated from all of its answers — `block_stats_updated` counts
+     * those blocks.
      *
      * POST /api/admin/elo/backfill/run/{courseId}
      */
@@ -146,7 +174,18 @@ class EloBackfillController extends Controller
             'details' => [],
         ];
 
+        // Blocks that gained an interaction → recalibrated after the loop.
         $blockStatsUpdated = [];
+
+        // The D the app would answer with right now (BR-697NCA): the
+        // published calibration where there is one, the content elsewhere.
+        $published = $this->calibration->publishedDifficulties(
+            array_column($blocksWithGpf, 'block_id')
+        );
+
+        // opened_at / confirmed_at of every lesson block — what the gaming
+        // rule reads, exactly as the app persisted it.
+        $lessonTimestamps = $this->loadLessonBlockTimestamps($course->id, $userIds->all());
 
         foreach ($userIds as $userId) {
             try {
@@ -156,11 +195,11 @@ class EloBackfillController extends Controller
 
                 $detail = DB::transaction(function () use (
                     $userId, $courseId, $blocksWithGpf, $blockIds,
-                    $userProgressRecords, $userQuizAttempts, &$blockStatsUpdated
+                    $userProgressRecords, $userQuizAttempts, $lessonTimestamps, $published, &$blockStatsUpdated
                 ) {
                     return $this->processUser(
                         $userId, $courseId, $blocksWithGpf, $blockIds,
-                        $userProgressRecords, $userQuizAttempts, $blockStatsUpdated
+                        $userProgressRecords, $userQuizAttempts, $lessonTimestamps, $published, $blockStatsUpdated
                     );
                 });
 
@@ -178,6 +217,13 @@ class EloBackfillController extends Controller
             }
         }
 
+        $gpfByBlock = TaskCalibrationService::extractBlockGpf($courseData);
+        foreach (array_keys($blockStatsUpdated) as $blockId) {
+            $gpf = $gpfByBlock[$blockId] ?? null;
+            if ($gpf !== null) {
+                $this->calibration->recalibrateBlock((string) $blockId, $gpf);
+            }
+        }
         $results['block_stats_updated'] = count($blockStatsUpdated);
 
         return response()->json(['data' => $results]);
@@ -193,6 +239,8 @@ class EloBackfillController extends Controller
         array $allBlockIds,
         $progressRecords,
         $quizAttempts,
+        array $lessonTimestamps,
+        array $published,
         array &$blockStatsUpdated
     ): array {
         // Get or create UserEloProfile
@@ -239,20 +287,24 @@ class EloBackfillController extends Controller
 
             [$score, $source] = $scoreResult;
 
-            // Get or create BlockStat
-            $blockStat = BlockStat::firstOrCreate(
-                ['block_id' => $blockId],
-                ['item_pocet' => array_fill(0, EloEngine::GPF_DIMENSIONS, 0)]
-            );
-            $itemPocet = $blockStat->item_pocet ?? array_fill(0, EloEngine::GPF_DIMENSIONS, 0);
+            // Pilot 2: a guess moves neither the ratings nor the counters. The
+            // app skips it live, so the recompute must too, or a backfill
+            // writes back the very ELO the client refused (BR-3N79C3). Quiz
+            // guesses never reach here — buildQuizScoreMap drops them.
+            if ($source === 'lesson'
+                && $this->isGamingLessonAttempt($lessonTimestamps[$userId.':'.$blockId] ?? null)) {
+                continue;
+            }
 
-            // Run ELO engine
+            // Only the student half is used: D belongs to the calibration,
+            // which replays this row once it exists (BR-697NCA).
+            $taskElo = TaskCalibrationService::effective($block['elo_vector'], $published[$blockId] ?? null);
             $result = EloEngine::updateTask(
                 $profilElo,
                 $profilPocet,
                 $block['relation_vector'],
-                $block['elo_vector'],
-                $itemPocet,
+                $taskElo,
+                array_fill(0, EloEngine::GPF_DIMENSIONS, 0),
                 $score
             );
 
@@ -263,13 +315,16 @@ class EloBackfillController extends Controller
                 'course_id' => $block['course_id'],
                 'source' => $source,
                 'score' => $score,
+                'profil_elo_before' => $profilElo,
                 'profil_elo_snapshot' => $result['profil_elo'],
-                'elo_vector_snapshot' => $result['elo_vector'],
+                'elo_vector_used' => $taskElo,
+                // D before; the recalibration at the end of run() rewrites it to D after.
+                'elo_vector_snapshot' => $taskElo,
                 'updated_indices' => $result['updated_indices'],
+                // Replayed with the PHP engine, so its configuration applies (BR-EBNMBF).
+                'elo_config_version' => EloEngine::CONFIG_VERSION,
             ]);
 
-            // Update block stat
-            $blockStat->update(['item_pocet' => $result['item_pocet']]);
             $blockStatsUpdated[$blockId] = true;
 
             // Carry forward updated profile for next block
@@ -387,6 +442,9 @@ class EloBackfillController extends Controller
     /**
      * Build quiz score map from quiz attempts.
      * Returns: blockId → score (1.0 or 0.0)
+     *
+     * Answers the client's gaming filter flagged (`gamed`, BR-RQQVP6) are left
+     * out: the quiz never moved ELO for them (BR-3N79C3).
      */
     private function buildQuizScoreMap($quizAttempts): array
     {
@@ -395,6 +453,9 @@ class EloBackfillController extends Controller
         foreach ($quizAttempts as $attempt) {
             $answers = $attempt->answers ?? [];
             foreach ($answers as $answer) {
+                if (! empty($answer['gamed'])) {
+                    continue;
+                }
                 $questionId = $answer['question_id'] ?? $answer['block_id'] ?? null;
                 if ($questionId && ! isset($map[$questionId])) {
                     $map[$questionId] = ! empty($answer['is_correct']) ? 1.0 : 0.0;
@@ -442,6 +503,78 @@ class EloBackfillController extends Controller
         } else {
             return [0.5, 'lesson'];
         }
+    }
+
+    /**
+     * Pilot 2 gaming rule for a lesson answer — same test as the app's
+     * isGamingLessonAttempt (gaming_filter.dart), on the same pair the app
+     * persisted as block_timestamps: opened_at (block shown) and confirmed_at
+     * (answer submitted). Under GAMING_THRESHOLD_MS apart is a guess.
+     *
+     * Missing or unparsable timestamps give no verdict — never flag what
+     * cannot be measured. The synthetic timings runTimestampBackfill writes
+     * into elo_interactions are estimates, not measurements, and are never
+     * read here.
+     *
+     * @param  array{opened_at?: mixed, confirmed_at?: mixed}|null  $timestamps
+     */
+    private function isGamingLessonAttempt(?array $timestamps): bool
+    {
+        $opened = $timestamps['opened_at'] ?? null;
+        $confirmed = $timestamps['confirmed_at'] ?? null;
+        if (! is_string($opened) || ! is_string($confirmed)) {
+            return false;
+        }
+
+        try {
+            $openedAt = Carbon::parse($opened);
+            $confirmedAt = Carbon::parse($confirmed);
+        } catch (\Throwable) {
+            return false;
+        }
+
+        // Signed, like the app's Duration comparison: confirmed − opened.
+        return $openedAt->diffInMilliseconds($confirmedAt, false) < self::GAMING_THRESHOLD_MS;
+    }
+
+    /**
+     * Recalibrate task difficulty for the blocks of a course (BR-697NCA):
+     * replay every answer to each block in answer order, from the course's
+     * elo_vector and zero counts. See TaskCalibrationService::recalibrateBlock.
+     *
+     * POST /api/admin/elo/recalibrate/{courseId}?offset=&limit=&dry_run=
+     *
+     * Pages through the course's blocks like the timestamp backfill pages
+     * through rows — Cloudflare cuts a request at ~120 s — so the caller
+     * repeats with `offset = next_offset` until `done: true`. A dry run
+     * computes the same numbers and rolls everything back.
+     */
+    public function recalibrate(Request $request, string $courseId): JsonResponse
+    {
+        @set_time_limit(300);
+
+        $course = Course::where('course_id', $courseId)->first();
+        if (! $course) {
+            return response()->json(['message' => 'Course not found'], 404);
+        }
+        if (! $course->data) {
+            return response()->json(['message' => 'Course has no data JSON'], 422);
+        }
+
+        $offset = max(0, (int) $request->query('offset', 0));
+        $limit = max(1, min(500, (int) $request->query('limit', 50)));
+        $dryRun = (bool) $request->query('dry_run', false);
+
+        $result = $this->calibration->recalibrateCourse($course, $offset, $limit, $dryRun);
+
+        return response()->json([
+            'data' => [
+                'course_id' => $courseId,
+                'offset' => $offset,
+                ...$result,
+                'dry_run' => $dryRun,
+            ],
+        ]);
     }
 
     /**

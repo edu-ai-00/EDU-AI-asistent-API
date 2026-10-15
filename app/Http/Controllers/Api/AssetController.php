@@ -22,19 +22,30 @@ class AssetController extends Controller
     ];
 
     /**
-     * List assets for a course.
+     * Folders that hold assets not belonging to any course.
+     */
+    private const ALLOWED_SCOPES = [
+        'news',
+    ];
+
+    /**
+     * List assets for a course, or for a course-less scope.
      *
      * GET /api/admin/assets?course_id=biologie-101
+     * GET /api/admin/assets?scope=news
      */
     public function index(Request $request): JsonResponse
     {
         $request->validate([
-            'course_id' => 'required|string',
+            'course_id' => 'required_without:scope|nullable|string',
+            'scope' => 'required_without:course_id|nullable|in:' . implode(',', self::ALLOWED_SCOPES),
         ]);
 
-        $courseId = $request->query('course_id');
+        $scope = $request->query('scope');
 
-        $assets = Asset::where('course_id', $courseId)
+        $assets = Asset::query()
+            ->when($scope, fn ($query) => $query->where('scope', $scope))
+            ->when(! $scope, fn ($query) => $query->where('course_id', $request->query('course_id'))->whereNull('scope'))
             ->orderBy('created_at', 'desc')
             ->get();
 
@@ -55,30 +66,40 @@ class AssetController extends Controller
     public function store(Request $request): JsonResponse
     {
         $request->validate([
-            'course_id' => 'required|string',
+            'course_id' => 'required_without:scope|nullable|string',
+            'scope' => 'required_without:course_id|nullable|in:' . implode(',', self::ALLOWED_SCOPES),
             'file' => 'required|file|mimetypes:' . implode(',', self::ALLOWED_MIMES),
         ]);
 
-        $courseId = $request->input('course_id');
+        $scope = $request->input('scope');
+        $courseId = $scope ? null : $request->input('course_id');
+        $folder = $scope ?: $courseId;
         $file = $request->file('file');
         $filename = $file->getClientOriginalName();
-        $path = "assets/{$courseId}/{$filename}";
+        $path = "assets/{$folder}/{$filename}";
 
         // If file already exists, append timestamp before extension
         if (Storage::disk('s3')->exists($path)) {
             $name = pathinfo($filename, PATHINFO_FILENAME);
             $ext = pathinfo($filename, PATHINFO_EXTENSION);
             $filename = "{$name}-" . time() . ".{$ext}";
-            $path = "assets/{$courseId}/{$filename}";
+            $path = "assets/{$folder}/{$filename}";
         }
 
+        // BR-TBN2T6: a file deleted and uploaded again under the same name
+        // lands on the same key, and lessons keep pointing at its URL. Without
+        // Cache-Control, browsers cached the old bytes heuristically for days,
+        // so the replacement never showed. no-cache makes every view revalidate
+        // against the ETag (a cheap 304 when nothing changed).
         Storage::disk('s3')->put($path, file_get_contents($file->getRealPath()), [
             'ContentType' => $file->getMimeType(),
+            'CacheControl' => 'no-cache',
         ]);
 
         $publicUrl = rtrim(config('filesystems.disks.s3.url'), '/') . '/' . $path;
 
         $asset = Asset::create([
+            'scope' => $scope,
             'course_id' => $courseId,
             'filename' => $filename,
             'path' => $path,
@@ -115,6 +136,7 @@ class AssetController extends Controller
     {
         return [
             'id' => $asset->id,
+            'scope' => $asset->scope,
             'course_id' => $asset->course_id,
             'filename' => $asset->filename,
             'path' => $asset->path,

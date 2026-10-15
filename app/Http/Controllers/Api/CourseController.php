@@ -7,7 +7,10 @@ use App\Http\Requests\UploadCourseRequest;
 use App\Models\Classroom;
 use App\Models\Course;
 use App\Models\UserCourse;
+use App\Services\AuditLogger;
 use App\Services\CourseStorageService;
+use App\Services\CourseStructureFingerprint;
+use App\Support\CourseBlocks;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Database\QueryException;
@@ -16,7 +19,8 @@ use Illuminate\Support\Facades\Storage;
 class CourseController extends Controller
 {
     public function __construct(
-        protected CourseStorageService $storageService
+        protected CourseStorageService $storageService,
+        protected AuditLogger $audit,
     ) {}
 
     /**
@@ -127,6 +131,28 @@ class CourseController extends Controller
             $course->avg_progress = round((float) $course->avg_progress, 1);
         }
 
+        // Sibling language variants, so the editor can offer to switch between
+        // them and flag any that have drifted out of structural sync (BR-AYACEK).
+        // Mirrors the visibility rule above: a caller who may only see published
+        // courses may only see published siblings.
+        $siblingQuery = $course->translations();
+        if (!$request->user() && !$request->attributes->get('admin_role')) {
+            $siblingQuery->published();
+        }
+
+        $course->setAttribute('translations', $siblingQuery
+            ->get(['id', 'course_id', 'language', 'name', 'version', 'status', 'structure_hash'])
+            ->map(fn (Course $sibling) => [
+                'id' => $sibling->id,
+                'course_id' => $sibling->course_id,
+                'language' => $sibling->language,
+                'name' => $sibling->name,
+                'version' => $sibling->version,
+                'status' => $sibling->status,
+                'in_sync' => $course->structureAgreesWith($sibling),
+            ])
+            ->values());
+
         return response()->json([
             'data' => $course,
         ]);
@@ -176,21 +202,45 @@ class CourseController extends Controller
         $request->validated();
         $courseData = $request->all();
 
-        // Extract metadata for database storage
-        $metadata = $this->storageService->extractMetadata($courseData);
+        // Transport-only flag — never part of the stored course JSON (BR-PKYUZC).
+        $autoVersion = $request->boolean('auto_version');
+        unset($courseData['auto_version']);
+
+        // Each block is stored once, however many times the payload lists it
+        // (BR-XU4Y5K) — R2, the `data` backup and every export read this copy.
+        $courseData = CourseBlocks::unique($courseData);
 
         // Check if course already exists
         $existingCourse = Course::where('course_id', $courseData['course_id'])->first();
 
         if ($existingCourse) {
-            // Check version - must be higher than existing
-            if ($courseData['version'] <= $existingCourse->version) {
+            if ($autoVersion) {
+                // The course editor saves whatever it has in memory; the server
+                // owns the version counter so a stale client copy can never
+                // deadlock saving. Manual JSON imports keep the strict check.
+                $courseData['version'] = $existingCourse->version + 1;
+            } elseif ($courseData['version'] <= $existingCourse->version) {
                 return response()->json([
                     'message' => 'Version must be higher than existing version',
                     'current_version' => $existingCourse->version,
                     'provided_version' => $courseData['version'],
                 ], 422);
             }
+        }
+
+        // Extract metadata for database storage (after the version is settled).
+        $metadata = $this->storageService->extractMetadata($courseData);
+
+        // Language variants must share one structure (BR-AYACEK). Check before
+        // touching R2 so a refused upload leaves nothing behind.
+        $conflict = $this->structureConflict(
+            $courseData,
+            $courseData['course_id'],
+            $metadata['translation_key'],
+            $metadata['structure_hash'],
+        );
+        if ($conflict) {
+            return $conflict;
         }
 
         // Upload to R2
@@ -234,6 +284,8 @@ class CourseController extends Controller
             throw $e;
         }
 
+        $this->logPublication($course, $existingCourse?->status);
+
         return response()->json([
             'message' => $existingCourse ? 'Course updated successfully' : 'Course created successfully',
             'data' => $course,
@@ -244,6 +296,91 @@ class CourseController extends Controller
                 'expires_at' => $uploadResult['expires_at'],
             ],
         ], $existingCourse ? 200 : 201);
+    }
+
+    /**
+     * Publishing is what puts a course in front of students, so a move into
+     * or out of `published` is audited (BR-BNNASY). Other edits are content
+     * work and are not.
+     */
+    private function logPublication(Course $course, ?string $statusBefore): void
+    {
+        $statusAfter = $course->status;
+
+        $action = match (true) {
+            $statusBefore === $statusAfter => null,
+            $statusAfter === 'published' => 'course.published',
+            $statusBefore === 'published' => 'course.unpublished',
+            default => null,
+        };
+
+        if ($action === null) {
+            return;
+        }
+
+        $this->audit->log($action, $course, diff: [
+            'status' => AuditLogger::pair('status', $statusBefore, $statusAfter),
+        ], meta: [
+            'course_id' => $course->course_id,
+            'version' => $course->version,
+        ]);
+    }
+
+    /**
+     * Refuse an upload whose structure disagrees with a sibling translation
+     * (BR-AYACEK).
+     *
+     * Language variants are only allowed to differ in wording. If the incoming
+     * fingerprint does not match a sibling's, the save is rejected with the
+     * exact paths that diverged, so the editor can tell the author what to
+     * bring back in line — in either language.
+     *
+     * Siblings that have never been fingerprinted (legacy rows whose JSON we
+     * cannot read) are skipped rather than blocking the upload.
+     *
+     * @return JsonResponse|null Null when the upload may proceed.
+     */
+    private function structureConflict(
+        array $courseData,
+        string $courseId,
+        string $translationKey,
+        string $structureHash,
+    ): ?JsonResponse {
+        $siblings = Course::where('translation_key', $translationKey)
+            ->where('course_id', '!=', $courseId)
+            ->whereNotNull('structure_hash')
+            ->orderBy('language')
+            ->get();
+
+        foreach ($siblings as $sibling) {
+            if ($sibling->structure_hash === $structureHash) {
+                continue;
+            }
+
+            return response()->json([
+                'message' => sprintf(
+                    'Struktura kurzu se liší od jazykové varianty „%s" (%s). '
+                    . 'Sjednoťte obsah napříč jazyky — měnit se smí jen texty.',
+                    $sibling->language,
+                    $sibling->name,
+                ),
+                'structure_conflict' => [
+                    'translation_key' => $translationKey,
+                    'against' => [
+                        'id' => $sibling->id,
+                        'course_id' => $sibling->course_id,
+                        'language' => $sibling->language,
+                        'name' => $sibling->name,
+                        'version' => $sibling->version,
+                    ],
+                    'diff' => is_array($sibling->data)
+                        ? CourseStructureFingerprint::diff($sibling->data, $courseData)
+                        : [],
+                ],
+            ], 422);
+        }
+
+        return null;
     }
 
     /**
@@ -327,21 +464,43 @@ class CourseController extends Controller
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'course_id' => 'required|string|max:255|unique:courses',
+            'translation_key' => 'sometimes|nullable|string|max:255',
             'version' => 'required|integer|min:1',
-            'language' => 'required|string|max:10',
+            'language' => 'required|string|max:10|exists:languages,code',
             'status' => 'sometimes|in:draft,locked,approved,published,private',
             'data' => 'required|array',
             'data.export_type' => 'required|in:course_v2,exercise_v2,quiz_v2',
+        ], [
+            'language.exists' => 'Neznámý jazyk. Vyberte jazyk ze seznamu dostupných jazyků.',
         ]);
 
         // Use the full submitted data — validated() strips nested keys without
         // an explicit rule (e.g. `lessons`), which would zero out the derived
-        // metadata and truncate the stored `data` backup.
-        $fullData = $request->input('data');
+        // metadata and truncate the stored `data` backup. Each block is kept
+        // once (BR-XU4Y5K).
+        $fullData = CourseBlocks::unique($request->input('data'));
 
         $display = $this->storageService->extractDisplayMetadata($fullData);
         // New course: fall back to a detected emoji when none was provided.
         $display['emoji'] ??= $this->storageService->detectEmoji($fullData);
+
+        // Translation group + fingerprint (BR-AYACEK). A course created here is
+        // its own group unless it explicitly joins one; either way its structure
+        // is recorded so later variants have something to be checked against.
+        $translationKey = $validated['translation_key']
+            ?? ($fullData['translation_key'] ?? null)
+            ?: $validated['course_id'];
+        $structureHash = CourseStructureFingerprint::compute($fullData);
+
+        $conflict = $this->structureConflict(
+            $fullData,
+            $validated['course_id'],
+            $translationKey,
+            $structureHash,
+        );
+        if ($conflict) {
+            return $conflict;
+        }
 
         $course = Course::create(array_merge(
             // Denormalize display metadata (lesson_count, duration, description, …)
@@ -349,6 +508,8 @@ class CourseController extends Controller
             $display,
             [
                 'course_id' => $validated['course_id'],
+                'translation_key' => $translationKey,
+                'structure_hash' => $structureHash,
                 'name' => $validated['name'],
                 'version' => $validated['version'],
                 'language' => $validated['language'],
@@ -357,6 +518,8 @@ class CourseController extends Controller
                 'created_by' => $request->user()?->id,
             ],
         ));
+
+        $this->logPublication($course, null);
 
         return response()->json([
             'message' => 'Course created successfully',
@@ -381,13 +544,16 @@ class CourseController extends Controller
         $validated = $request->validate([
             'name' => 'sometimes|string|max:255',
             'course_id' => 'sometimes|string|max:255|unique:courses,course_id,' . $id,
-            'language' => 'sometimes|string|max:10',
+            'translation_key' => 'sometimes|nullable|string|max:255',
+            'language' => 'sometimes|string|max:10|exists:languages,code',
             'status' => 'sometimes|in:draft,locked,approved,published,private',
             'description' => 'sometimes|nullable|string|max:500',
             'author' => 'sometimes|nullable|string|max:255',
             'emoji' => 'sometimes|nullable|string|max:10',
             'data' => 'sometimes|array',
             'data.export_type' => 'required_with:data|in:course_v2,exercise_v2,quiz_v2',
+        ], [
+            'language.exists' => 'Neznámý jazyk. Vyberte jazyk ze seznamu dostupných jazyků.',
         ]);
 
         // When course content changes, re-derive the denormalized display
@@ -397,9 +563,30 @@ class CourseController extends Controller
         // don't wipe an existing description/emoji when data omits them.
         if (isset($validated['data'])) {
             // Use the full submitted data — validated() drops nested keys
-            // (e.g. `lessons`) that lack an explicit rule.
-            $fullData = $request->input('data');
+            // (e.g. `lessons`) that lack an explicit rule. Each block is kept
+            // once (BR-XU4Y5K).
+            $fullData = CourseBlocks::unique($request->input('data'));
             $validated['data'] = $fullData;
+
+            // This endpoint can rewrite course content, so it has to honour the
+            // same cross-language structure rule as upload() (BR-AYACEK).
+            $translationKey = $validated['translation_key']
+                ?? $course->translation_key
+                ?: $course->course_id;
+            $structureHash = CourseStructureFingerprint::compute($fullData);
+
+            $conflict = $this->structureConflict(
+                $fullData,
+                $validated['course_id'] ?? $course->course_id,
+                $translationKey,
+                $structureHash,
+            );
+            if ($conflict) {
+                return $conflict;
+            }
+
+            $validated['translation_key'] = $translationKey;
+            $validated['structure_hash'] = $structureHash;
 
             $derived = array_filter(
                 $this->storageService->extractDisplayMetadata($fullData),
@@ -408,7 +595,9 @@ class CourseController extends Controller
             $validated = array_merge($derived, $validated);
         }
 
+        $statusBefore = $course->status;
         $course->update($validated);
+        $this->logPublication($course, $statusBefore);
 
         return response()->json([
             'message' => 'Course updated successfully',
@@ -430,6 +619,11 @@ class CourseController extends Controller
         }
 
         $course->delete();
+
+        $this->audit->log('course.deleted', $course, meta: [
+            'course_id' => $course->course_id,
+            'name' => $course->name,
+        ]);
 
         return response()->json([
             'message' => 'Course deleted successfully',
@@ -453,6 +647,11 @@ class CourseController extends Controller
 
         $course->restore();
 
+        $this->audit->log('course.restored', $course, meta: [
+            'course_id' => $course->course_id,
+            'name' => $course->name,
+        ]);
+
         return response()->json([
             'data' => $course->fresh(),
         ]);
@@ -467,19 +666,25 @@ class CourseController extends Controller
     {
         $request->validate([
             'updated_since' => 'sometimes|date',
+            'since' => 'sometimes|date',
         ]);
 
+        // `name` and `language` must be included: the app creates local catalog
+        // rows from this payload, and without a name they fall back to a
+        // generic "Kurz" placeholder (BR listing bug).
         $query = Course::query()
-            ->select('id', 'course_id', 'version', 'status', 'file_size', 'updated_at');
+            ->select('id', 'course_id', 'name', 'language', 'version', 'status', 'file_size', 'updated_at');
 
         // Public access: only published courses
         if (!$request->user()) {
             $query->published();
         }
 
-        // Filter by updated_since timestamp
-        if ($request->has('updated_since')) {
-            $query->updatedSince($request->updated_since);
+        // Filter by timestamp — the app historically sends `since`,
+        // older clients/docs use `updated_since`; accept both.
+        $since = $request->input('updated_since', $request->input('since'));
+        if ($since !== null) {
+            $query->updatedSince($since);
         }
 
         $courses = $query->orderBy('updated_at', 'desc')->get();
@@ -491,7 +696,7 @@ class CourseController extends Controller
     }
 
     /**
-     * Backfill course flags (pin, starts_with_quiz, only_once, logged_only) from stored JSON.
+     * Backfill course flags (pin, starts_with_quiz, only_once, logged_only, open_all_lessons) from stored JSON.
      * Admin-only, callable via API for production environments.
      *
      * POST /api/admin/courses/backfill
@@ -539,6 +744,11 @@ class CourseController extends Controller
                 if ($course->only_quiz) {
                     $course->starts_with_quiz = true;
                 }
+                $changed = true;
+            }
+
+            if (isset($data['open_all_lessons'])) {
+                $course->open_all_lessons = (bool) $data['open_all_lessons'];
                 $changed = true;
             }
 

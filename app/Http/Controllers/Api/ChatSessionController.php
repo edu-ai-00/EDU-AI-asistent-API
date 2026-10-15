@@ -4,9 +4,12 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\ChatSession;
+use App\Models\Mentor;
 use App\Services\ChatAiService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class ChatSessionController extends Controller
 {
@@ -35,15 +38,33 @@ class ChatSessionController extends Controller
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'persona' => 'required|string|in:ai_teacher,math_mentor,study_coach,language_mentor',
+            // Mentors come from the `mentors` table now; an unknown or retired
+            // slug is still a 422, same as when this was an in: rule.
+            'persona' => [
+                'required',
+                'string',
+                'max:50',
+                Rule::exists('mentors', 'slug')->where('is_active', true),
+            ],
             'title' => 'nullable|string|max:255',
         ]);
+
+        // Hidden mentors belong to one course; only students of that course may
+        // open a chat with them, so the check is here and not only in the list.
+        $mentor = Mentor::selectableBy($request->user())
+            ->where('slug', $validated['persona'])
+            ->first();
+
+        if (! $mentor) {
+            return response()->json(['message' => 'Tento mentor není dostupný'], 403);
+        }
 
         $session = ChatSession::create([
             'user_id' => $request->user()->id,
             'title' => $validated['title'] ?? '',
-            'persona' => $validated['persona'],
+            'persona' => $mentor->slug,
             'last_message_at' => now(),
+            'rag_conversation_id' => $mentor->isRag() ? (string) Str::uuid() : null,
         ]);
 
         return response()->json([

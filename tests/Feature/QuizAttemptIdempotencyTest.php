@@ -96,6 +96,37 @@ class QuizAttemptIdempotencyTest extends TestCase
         $this->assertSame(100, $row->score_percent);
     }
 
+    /**
+     * A guess caught by the client's gaming filter is stored flagged, so the
+     * attempt explains why its score is lower than its tally of right
+     * answers (BR-RQQVP6).
+     */
+    public function test_guessed_answer_flag_is_stored(): void
+    {
+        $user = User::factory()->create(['role' => 'student']);
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/user/quiz-attempts', [
+            'course_id' => 'C1',
+            'total_questions' => 2,
+            // The guess landed on the right option but scores as nothing.
+            'correct_answers' => 1,
+            'score_percent' => 50,
+            'started_at' => '2026-09-04T08:00:00+00:00',
+            'answers' => [
+                ['question_index' => 0, 'question_id' => 'q1', 'is_correct' => true],
+                ['question_index' => 1, 'question_id' => 'q2', 'is_correct' => true, 'gamed' => true],
+            ],
+        ])->assertCreated();
+
+        $row = QuizAttempt::where('user_id', $user->id)->sole();
+        $answers = is_string($row->answers) ? json_decode($row->answers, true) : $row->answers;
+
+        $this->assertArrayNotHasKey('gamed', $answers[0]);
+        $this->assertTrue($answers[1]['gamed']);
+        $this->assertSame(1, $row->correct_answers);
+    }
+
     public function test_legacy_payload_without_started_at_still_creates_row(): void
     {
         $user = User::factory()->create(['role' => 'student']);

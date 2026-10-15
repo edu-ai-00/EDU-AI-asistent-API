@@ -33,7 +33,7 @@ class CourseSkillsController extends Controller
 
         // Get all enrolled students
         $enrollments = UserCourse::where('course_id', $course->id)
-            ->with('user:id,name,email,classroom_id')
+            ->with('user:id,name,email', 'user.classrooms:classrooms.id,name')
             ->get();
 
         $studentIds = $enrollments->pluck('user_id')->all();
@@ -58,7 +58,8 @@ class CourseSkillsController extends Controller
                     'user' => $enrollment->user ? [
                         'id' => $enrollment->user->id,
                         'name' => $enrollment->user->name,
-                        'classroom_id' => $enrollment->user->classroom_id,
+                        'classroom_ids' => $enrollment->user->classrooms->pluck('id')->all(),
+                        'classroom_name' => $enrollment->user->classroomNames() ?: null,
                     ] : null,
                     'skills' => array_fill(0, count($skillNames), null),
                     'has_data' => false,
@@ -80,7 +81,8 @@ class CourseSkillsController extends Controller
                 'user' => $enrollment->user ? [
                     'id' => $enrollment->user->id,
                     'name' => $enrollment->user->name,
-                    'classroom_id' => $enrollment->user->classroom_id,
+                    'classroom_ids' => $enrollment->user->classrooms->pluck('id')->all(),
+                    'classroom_name' => $enrollment->user->classroomNames() ?: null,
                 ] : null,
                 'skills' => $skills,
                 'has_data' => true,

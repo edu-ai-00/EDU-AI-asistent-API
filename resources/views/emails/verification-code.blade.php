@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="cs">
+<html lang="{{ app()->getLocale() }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ověřovací kód</title>
+    <title>{{ __('mail.verification.title') }}</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -80,25 +80,25 @@
     <div class="container">
         <div class="card">
             <div class="logo">
-                <img src="https://api-production-0e6e.up.railway.app/images/logo.png" alt="EduAI" style="height: 48px; width: auto;">
+                <img src="{{ asset('images/logo.png') }}" alt="EduAI" style="height: 48px; width: auto;">
             </div>
 
-            <h1>Váš ověřovací kód</h1>
+            <h1>{{ __('mail.verification.title') }}</h1>
 
-            <p>Dobrý den,</p>
-            <p>Pro ověření vaší e-mailové adresy v aplikaci EduAI použijte následující kód:</p>
+            <p>{{ __('mail.verification.greeting') }}</p>
+            <p>{{ __('mail.verification.intro') }}</p>
 
             <div class="code-container" style="background-color: #3C315B; background: linear-gradient(135deg, #7F68C1 0%, #3C315B 100%); border-radius: 16px; padding: 24px; text-align: center; margin: 24px 0;">
                 <span class="code" style="font-size: 36px; font-weight: 900; letter-spacing: 8px; color: #ffffff; font-family: 'Courier New', monospace;">{{ $code }}</span>
             </div>
 
-            <p class="expiry">Kód je platný {{ $expiresInMinutes }} minut.</p>
+            <p class="expiry">{{ __('mail.verification.expiry', ['minutes' => $expiresInMinutes]) }}</p>
 
-            <p>Pokud jste o tento kód nežádali, můžete tento e-mail ignorovat.</p>
+            <p>{{ __('mail.verification.ignore') }}</p>
 
             <div class="footer">
-                <p>Tento e-mail byl odeslán automaticky z aplikace EduAI.</p>
-                <p>Neodpovídejte na tento e-mail.</p>
+                <p>{{ __('mail.verification.footer_auto') }}</p>
+                <p>{{ __('mail.verification.footer_no_reply') }}</p>
             </div>
         </div>
     </div>

@@ -11,21 +11,18 @@ use Illuminate\Http\Request;
 class AdminChatController extends Controller
 {
     /**
-     * List all chat sessions (admin) or for teacher's students only.
+     * List all chat sessions.
      *
-     * GET /api/admin/chat/sessions
+     * GET /api/admin/chat/sessions (admin-only, BR-4KPUJQ)
      * Filters: ?user_id=, ?persona=, ?search= (title), ?classroom_id=
      */
     public function index(Request $request): JsonResponse
     {
-        $query = ChatSession::with('user:id,name,email,classroom_id');
-
-        // Teachers can only see sessions from their classroom students
-        if ($request->attributes->get('admin_role') === 'teacher') {
-            $classroomIds = $request->user()->teachingClassrooms()->pluck('classrooms.id');
-            $studentIds = \App\Models\User::whereIn('classroom_id', $classroomIds)->pluck('id');
-            $query->whereIn('user_id', $studentIds);
-        }
+        // The app opens a session the moment a mentor is picked, so a student
+        // who backs out without typing leaves a row with no messages. Those
+        // are not conversations — keep them out of the history (BR-MWEUHX).
+        $query = ChatSession::with('user:id,name,email')
+            ->has('messages');
 
         if ($request->filled('user_id')) {
             $query->where('user_id', $request->input('user_id'));
@@ -40,7 +37,7 @@ class AdminChatController extends Controller
         }
 
         if ($request->filled('classroom_id')) {
-            $studentIds = \App\Models\User::where('classroom_id', $request->input('classroom_id'))->pluck('id');
+            $studentIds = \App\Models\User::inClassrooms([$request->input('classroom_id')])->pluck('id');
             $query->whereIn('user_id', $studentIds);
         }
 
@@ -73,20 +70,11 @@ class AdminChatController extends Controller
     /**
      * Show a single chat session with all messages.
      *
-     * GET /api/admin/chat/sessions/{id}
+     * GET /api/admin/chat/sessions/{id} (admin-only, BR-4KPUJQ)
      */
     public function show(Request $request, int $id): JsonResponse
     {
-        $session = ChatSession::with('user:id,name,email,classroom_id')->findOrFail($id);
-
-        // Teachers can only view their classroom students' sessions
-        if ($request->attributes->get('admin_role') === 'teacher') {
-            $classroomIds = $request->user()->teachingClassrooms()->pluck('classrooms.id');
-            $studentIds = \App\Models\User::whereIn('classroom_id', $classroomIds)->pluck('id');
-            if (!$studentIds->contains($session->user_id)) {
-                return response()->json(['message' => 'Access denied.'], 403);
-            }
-        }
+        $session = ChatSession::with('user:id,name,email')->findOrFail($id);
 
         $messages = $session->messages()->orderBy('created_at', 'asc')->get();
 
@@ -122,20 +110,11 @@ class AdminChatController extends Controller
      * Send a teacher reply into a student's chat session.
      * Creates a message with role=assistant (appears as AI/teacher to student).
      *
-     * POST /api/admin/chat/sessions/{id}/reply
+     * POST /api/admin/chat/sessions/{id}/reply (admin-only, BR-4KPUJQ)
      */
     public function reply(Request $request, int $id): JsonResponse
     {
         $session = ChatSession::findOrFail($id);
-
-        // Teachers can only reply to their classroom students
-        if ($request->attributes->get('admin_role') === 'teacher') {
-            $classroomIds = $request->user()->teachingClassrooms()->pluck('classrooms.id');
-            $studentIds = \App\Models\User::whereIn('classroom_id', $classroomIds)->pluck('id');
-            if (!$studentIds->contains($session->user_id)) {
-                return response()->json(['message' => 'Access denied.'], 403);
-            }
-        }
 
         $validated = $request->validate([
             'content' => 'required|string|max:4000',
