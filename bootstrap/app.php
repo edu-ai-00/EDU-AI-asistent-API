@@ -14,10 +14,17 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // Honour the client's Accept-Language on every API call, so mail and
+        // any future translated response come back in the user's language.
+        $middleware->api(prepend: [
+            \App\Http\Middleware\SetLocale::class,
+        ]);
+
         $middleware->alias([
             'auth.optional' => \App\Http\Middleware\OptionalAuth::class,
             'admin' => \App\Http\Middleware\AdminMiddleware::class,
             'teacher.course' => \App\Http\Middleware\TeacherCourseAccess::class,
+            'teacher.student' => \App\Http\Middleware\TeacherStudentAccess::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

@@ -30,7 +30,33 @@ class QuizAttemptController extends Controller
             'answers.*.question_id' => 'sometimes|string',
             'answers.*.selected_answer' => 'sometimes|nullable|string',
             'answers.*.is_correct' => 'sometimes|boolean',
+            // Answers the client's gaming filter caught as guesses (BR-RQQVP6).
+            // They keep their is_correct verdict but are left out of
+            // correct_answers / score_percent, so the flag is what explains the
+            // gap between the two.
+            'answers.*.gamed' => 'sometimes|boolean',
             'answers.*.answered_at' => 'sometimes|nullable|date',
+            // AI grading of open answers (BR-FFVVYR). Stored inside the existing
+            // `answers` JSON column — no migration needed.
+            'answers.*.evaluated_by_ai' => 'sometimes|boolean',
+            'answers.*.ai_score' => 'sometimes|nullable|numeric|min:0|max:1',
+            'answers.*.ai_feedback' => 'sometimes|nullable|string|max:2000',
+            'answers.*.ai_model' => 'sometimes|nullable|string|max:255',
+            // Formative feedback + audit trail (BR-P745Q8). Same column, same
+            // reason: the shape of one answer changed, not the storage model.
+            'answers.*.feedback_parts' => 'sometimes|nullable|array',
+            'answers.*.feedback_parts.strengths' => 'sometimes|nullable|string|max:1200',
+            'answers.*.feedback_parts.improvements' => 'sometimes|nullable|string|max:1200',
+            'answers.*.feedback_parts.next_step' => 'sometimes|nullable|string|max:1200',
+            'answers.*.feedback_parts.hint_question' => 'sometimes|nullable|string|max:1200',
+            'answers.*.criteria_scores' => 'sometimes|nullable|array|max:4',
+            'answers.*.criteria_scores.*.id' => 'required|string|max:64',
+            'answers.*.criteria_scores.*.name' => 'sometimes|nullable|string|max:200',
+            'answers.*.criteria_scores.*.score' => 'required|numeric|min:0|max:1',
+            'answers.*.grading_basis' => 'sometimes|nullable|array',
+            'answers.*.attempt_status' => 'sometimes|string|in:evaluated,failed',
+            'answers.*.prompt_version' => 'sometimes|nullable|string|max:40',
+            'answers.*.photo_name' => 'sometimes|nullable|string|max:64',
         ]);
 
         $userId = $request->user()->id;
@@ -121,7 +147,7 @@ class QuizAttemptController extends Controller
      */
     public function adminByCourse(string $courseId): JsonResponse
     {
-        $attempts = QuizAttempt::with('user:id,name,email,classroom_id')
+        $attempts = QuizAttempt::with('user:id,name,email', 'user.classrooms:classrooms.id,name')
             ->where('course_id', $courseId)
             ->orderBy('created_at', 'desc')
             ->get();
@@ -134,7 +160,8 @@ class QuizAttemptController extends Controller
                     'id' => $a->user->id,
                     'name' => $a->user->name,
                     'email' => $a->user->email,
-                    'classroom_id' => $a->user->classroom_id,
+                    'classroom_ids' => $a->user->classrooms->pluck('id')->all(),
+                    'classroom_name' => $a->user->classroomNames() ?: null,
                 ] : null;
                 return $base;
             }),

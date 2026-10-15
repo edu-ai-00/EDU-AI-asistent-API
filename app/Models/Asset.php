@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class Asset extends Model
 {
     protected $fillable = [
+        'scope',
         'course_id',
         'filename',
         'path',

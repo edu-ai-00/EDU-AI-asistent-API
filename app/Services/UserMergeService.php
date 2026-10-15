@@ -14,6 +14,8 @@ use App\Models\SkillEventLog;
 use App\Models\StudentFsrsProfile;
 use App\Models\User;
 use App\Models\UserAchievement;
+use App\Models\UserAvatar;
+use App\Models\UserAvatarItem;
 use App\Models\UserCourse;
 use App\Models\UserEloProfile;
 use App\Models\UserMerge;
@@ -65,11 +67,16 @@ class UserMergeService
 
     /**
      * Execute the merge. All writes happen in one transaction.
+     *
+     * $allowStaffTarget lets a teacher/admin account be the surviving
+     * target — only ClassroomJoinService passes it, for a staff caller
+     * folding a roster placeholder into themselves (BR-BERW9B). The admin
+     * merge tool never does, and a staff source is refused regardless.
      */
-    public function merge(int $sourceId, int $targetId, int $adminId): UserMerge
+    public function merge(int $sourceId, int $targetId, int $adminId, bool $allowStaffTarget = false): UserMerge
     {
-        return DB::transaction(function () use ($sourceId, $targetId, $adminId) {
-            [$source, $target] = $this->loadAndValidate($sourceId, $targetId, lock: true);
+        return DB::transaction(function () use ($sourceId, $targetId, $adminId, $allowStaffTarget) {
+            [$source, $target] = $this->loadAndValidate($sourceId, $targetId, lock: true, allowStaffTarget: $allowStaffTarget);
             [$source, $target] = $this->enforceDirection($source, $target);
 
             $sourceSnapshot = $this->snapshotUser($source);
@@ -82,12 +89,16 @@ class UserMergeService
             $log['user_achievements'] = $this->mergeAchievements($source, $target);
             $log['bookmarks'] = $this->mergeBookmarks($source, $target);
             $log['user_themes'] = $this->mergeThemes($source, $target);
+            $log['user_avatar_items'] = $this->mergeAvatarItems($source, $target);
+            $log['user_avatars'] = $this->mergeAvatar($source, $target);
             $log['user_elo_profiles'] = $this->mergeEloProfiles($source, $target);
             $log['practice_cards'] = $this->mergePracticeCards($source, $target);
             $log['student_fsrs_profiles'] = $this->mergeFsrsProfile($source, $target);
 
+            $log['classrooms'] = $this->mergeClassrooms($source, $target);
+
             // Bulk reassignments — happen after dedupe-needing tables.
-            $log['quiz_attempts'] = $this->reassignSimple($source, $target, QuizAttempt::class);
+            $log['quiz_attempts'] = $this->reassignQuizAttempts($source, $target);
             $log['chat_sessions'] = $this->reassignSimple($source, $target, ChatSession::class);
             $log['elo_interactions'] = $this->reassignSimple($source, $target, EloInteraction::class);
             $log['practice_review_logs'] = $this->reassignSimple($source, $target, PracticeReviewLog::class);
@@ -156,7 +167,7 @@ class UserMergeService
      *
      * @return array{0: User, 1: User}
      */
-    private function loadAndValidate(int $sourceId, int $targetId, bool $lock): array
+    private function loadAndValidate(int $sourceId, int $targetId, bool $lock, bool $allowStaffTarget = false): array
     {
         // Guard 1: same id
         if ($sourceId === $targetId) {
@@ -200,10 +211,28 @@ class UserMergeService
             ]);
         }
 
-        // Guard 4: no admin/teacher accounts
-        if ($source->isAdminOrTeacher() || $target->isAdminOrTeacher()) {
+        // Guard 4: no admin/teacher accounts — except as the target of a
+        // self-service class join (see merge()).
+        if ($source->isAdminOrTeacher() || (!$allowStaffTarget && $target->isAdminOrTeacher())) {
             throw ValidationException::withMessages([
                 'role' => ['Nelze slučovat administrátorské nebo učitelské účty.'],
+            ]);
+        }
+
+        // Guard 5: a minor's pseudonymous account must never be merged by
+        // hand (BR-8FDF37). absorbGuest() already can't reach one — a minor
+        // has no email/OAuth identity to be resolved as a merge target, and
+        // is never created as a guest — but this admin-facing path takes
+        // arbitrary ids with no such structural protection. Without this,
+        // an admin tidying up a duplicate student could fold a real guest's
+        // data into a child's account (or vice versa), and
+        // finalizeSource() nulling email leaves guardian_id untouched, so
+        // the row stays inside consent:purge-revoked's scope — the eraser
+        // would then hit user_merges' RESTRICT on source_user_id/
+        // target_user_id/performed_by and throw.
+        if ($source->is_minor || $target->is_minor) {
+            throw ValidationException::withMessages([
+                'role' => ['Nelze slučovat účet nezletilého žáka.'],
             ]);
         }
 
@@ -250,7 +279,8 @@ class UserMergeService
             'role' => $user->role,
             'is_guest' => (bool) $user->is_guest,
             'device_id' => $user->device_id,
-            'classroom_id' => $user->classroom_id,
+            'classroom_ids' => $user->classrooms()->pluck('classrooms.id')->all(),
+            'classroom_name' => $user->classrooms()->pluck('classrooms.name')->implode(', ') ?: null,
             'avatar_index' => $user->avatar_index,
             'selected_subjects' => $user->selected_subjects,
             'email_verified_at' => $user->email_verified_at?->toIso8601String(),
@@ -277,6 +307,7 @@ class UserMergeService
                 'practice_cards' => PracticeCard::where('user_id', $user->id)->count(),
                 'practice_review_logs' => PracticeReviewLog::where('user_id', $user->id)->count(),
                 'user_themes' => UserTheme::where('user_id', $user->id)->count(),
+                'user_avatar_items' => UserAvatarItem::where('user_id', $user->id)->count(),
                 'content_feedback' => ContentFeedback::where('user_id', $user->id)->count(),
                 'debug_reports' => DebugReport::where('user_id', $user->id)->count(),
                 'skill_event_logs' => SkillEventLog::where('student_id', $user->id)->count(),
@@ -292,6 +323,7 @@ class UserMergeService
         return [
             'user_courses' => $this->planUserCourses($source, $target),
             'user_stats' => $this->planUserStats($source, $target),
+            'classrooms' => $this->planClassrooms($source, $target),
             'counts' => [
                 'user_progress' => UserProgress::where('user_id', $source->id)->count()
                     + UserProgress::where('user_id', $target->id)->count(),
@@ -497,6 +529,75 @@ class UserMergeService
     }
 
     /** Union by name. Sole-side rows reassigned. */
+    /**
+     * Move acquired cosmetics across, dropping anything the target already owns.
+     *
+     * A guest who bought items before signing up must keep them — without this
+     * the unique(user_id, avatar_item_id) constraint would abort the whole
+     * merge the moment both sides own the same item.
+     *
+     * @return array{reassigned: int, duplicates_dropped: int}
+     */
+    private function mergeAvatarItems(User $source, User $target): array
+    {
+        $stats = ['reassigned' => 0, 'duplicates_dropped' => 0];
+
+        $targetItemIds = UserAvatarItem::where('user_id', $target->id)
+            ->pluck('avatar_item_id')
+            ->all();
+
+        $sourceRows = UserAvatarItem::where('user_id', $source->id)->get();
+
+        foreach ($sourceRows as $row) {
+            if (in_array($row->avatar_item_id, $targetItemIds, true)) {
+                $row->delete();
+                $stats['duplicates_dropped']++;
+                continue;
+            }
+
+            $row->user_id = $target->id;
+            $row->save();
+            $targetItemIds[] = $row->avatar_item_id;
+            $stats['reassigned']++;
+        }
+
+        return $stats;
+    }
+
+    /**
+     * Carry the worn outfit over only when the target has none.
+     *
+     * The target is the account being kept; if that account already dressed
+     * its avatar, the guest's outfit is the older intent and is dropped. The
+     * items themselves survive via [mergeAvatarItems], so nothing is lost —
+     * the user just re-equips.
+     *
+     * @return array{reassigned: int, duplicates_dropped: int}
+     */
+    private function mergeAvatar(User $source, User $target): array
+    {
+        $stats = ['reassigned' => 0, 'duplicates_dropped' => 0];
+
+        $sourceAvatar = UserAvatar::where('user_id', $source->id)->first();
+
+        if ($sourceAvatar === null) {
+            return $stats;
+        }
+
+        if (UserAvatar::where('user_id', $target->id)->exists()) {
+            $sourceAvatar->delete();
+            $stats['duplicates_dropped']++;
+
+            return $stats;
+        }
+
+        $sourceAvatar->user_id = $target->id;
+        $sourceAvatar->save();
+        $stats['reassigned']++;
+
+        return $stats;
+    }
+
     private function mergeThemes(User $source, User $target): array
     {
         $stats = ['reassigned' => 0, 'duplicates_dropped' => 0];
@@ -646,11 +747,26 @@ class UserMergeService
         return $stats;
     }
 
-    /** Keep target's FSRS profile, delete source's. (per-user calibration, no merge). */
+    /**
+     * FSRS calibration is per-user and not mergeable: keep target's profile
+     * when it has one, otherwise adopt the source's so the calibration built
+     * up as a guest isn't thrown away.
+     */
     private function mergeFsrsProfile(User $source, User $target): array
     {
-        $deleted = StudentFsrsProfile::where('user_id', $source->id)->delete();
-        return ['source_deleted' => $deleted, 'target_kept_user_id' => $target->id];
+        $sourceProfile = StudentFsrsProfile::where('user_id', $source->id)->first();
+        if (!$sourceProfile) {
+            return ['action' => 'none'];
+        }
+
+        if (StudentFsrsProfile::where('user_id', $target->id)->exists()) {
+            $sourceProfile->delete();
+            return ['action' => 'kept_target_dropped_source'];
+        }
+
+        $sourceProfile->user_id = $target->id;
+        $sourceProfile->save();
+        return ['action' => 'reassigned_source'];
     }
 
     /**
@@ -664,6 +780,32 @@ class UserMergeService
             ->update(['user_id' => $target->id]);
 
         return ['reassigned' => $count];
+    }
+
+    /**
+     * Quiz attempts carry a unique idempotency index on
+     * (user_id, course_id, started_at). A source attempt sharing
+     * (course_id, started_at) with a target attempt is by that definition a
+     * duplicate of the same attempt — drop it before the bulk reassign, or the
+     * unique index would abort the whole merge transaction.
+     */
+    private function reassignQuizAttempts(User $source, User $target): array
+    {
+        $dropped = QuizAttempt::where('user_id', $source->id)
+            ->whereNotNull('started_at')
+            ->whereExists(function ($query) use ($target) {
+                $query->select(DB::raw(1))
+                    ->from('quiz_attempts as t')
+                    ->where('t.user_id', $target->id)
+                    ->whereColumn('t.course_id', 'quiz_attempts.course_id')
+                    ->whereColumn('t.started_at', 'quiz_attempts.started_at');
+            })
+            ->delete();
+
+        $count = QuizAttempt::where('user_id', $source->id)
+            ->update(['user_id' => $target->id]);
+
+        return ['reassigned' => $count, 'duplicates_dropped' => $dropped];
     }
 
     /** SkillEventLog uses student_id, not user_id. */
@@ -712,11 +854,16 @@ class UserMergeService
             $targetStats->last_streak_date = $sLast;
         }
 
-        // Daily XP merge: if same date → sum; else keep target's existing values.
+        // Daily XP merge: same date → sum; different dates → the fresher
+        // day's counter wins (a guest who earned XP today must not have the
+        // daily counter replaced by the target's stale one).
         $sDaily = $sourceStats->daily_xp_date;
         $tDaily = $targetStats->daily_xp_date;
         if ($sDaily && $tDaily && $sDaily->toDateString() === $tDaily->toDateString()) {
             $targetStats->daily_xp_amount = (int) $sourceStats->daily_xp_amount + (int) $targetStats->daily_xp_amount;
+        } elseif ($sDaily && (!$tDaily || $sDaily > $tDaily)) {
+            $targetStats->daily_xp_date = $sDaily;
+            $targetStats->daily_xp_amount = (int) $sourceStats->daily_xp_amount;
         }
 
         // Recompute counts post-merge.
@@ -749,6 +896,38 @@ class UserMergeService
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
+     * Classroom membership is a union: every class the source sat in, the
+     * target sits in afterwards, and the source is detached from all of them
+     * so a teacher's roster does not list the same person twice (BR-3V2P22).
+     *
+     * This is also the whole mechanism behind "join a class by student
+     * code": the placeholder the teacher minted is the source, the
+     * student's real account is the target, and moving the membership is
+     * all the join has to do beyond the ordinary merge.
+     *
+     * @return array{attached: int, already_member: int}
+     */
+    private function mergeClassrooms(User $source, User $target): array
+    {
+        $sourceIds = $source->classrooms()->pluck('classrooms.id')->all();
+        $targetIds = $target->classrooms()->pluck('classrooms.id')->all();
+
+        $new = array_values(array_diff($sourceIds, $targetIds));
+
+        if (!empty($new)) {
+            $target->classrooms()->syncWithoutDetaching($new);
+        }
+        if (!empty($sourceIds)) {
+            $source->classrooms()->detach();
+        }
+
+        return [
+            'attached' => count($new),
+            'already_member' => count($sourceIds) - count($new),
+        ];
+    }
+
+    /**
      * Null out source.email, set merge pointer & timestamp. login_code (PIN)
      * is intentionally preserved (burned, never reused) per spec decision #2.
      */
@@ -766,6 +945,19 @@ class UserMergeService
     // ═══════════════════════════════════════════════════════════════════════════
     // Preview helpers (read-only planning)
     // ═══════════════════════════════════════════════════════════════════════════
+
+    /** @return array{source: array<int, string>, target: array<int, string>, result: array<int, string>} classroom names */
+    private function planClassrooms(User $source, User $target): array
+    {
+        $sourceNames = $source->classrooms()->pluck('classrooms.name', 'classrooms.id');
+        $targetNames = $target->classrooms()->pluck('classrooms.name', 'classrooms.id');
+
+        return [
+            'source' => $sourceNames->values()->all(),
+            'target' => $targetNames->values()->all(),
+            'result' => $targetNames->union($sourceNames)->values()->all(),
+        ];
+    }
 
     private function planUserCourses(User $source, User $target): array
     {

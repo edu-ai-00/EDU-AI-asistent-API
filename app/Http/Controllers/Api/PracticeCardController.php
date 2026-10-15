@@ -64,7 +64,12 @@ class PracticeCardController extends Controller
         $validated = $request->validate([
             'cards' => 'required|array|min:1',
             'cards.*.course_id' => 'required|string|max:255',
-            'cards.*.lesson_id' => 'required|string|max:255',
+            // Present but possibly empty: a card seeded by auto-bookmarking a
+            // wrong quiz answer has no lesson context. Requiring a non-empty
+            // value forced the client to drop those cards from the push, which
+            // left them stuck on one device forever (BR-ZBJ99Z). Nullable
+            // because Laravel's ConvertEmptyStringsToNull turns "" into null.
+            'cards.*.lesson_id' => 'present|nullable|string|max:255',
             'cards.*.block_id' => 'required|string|max:255',
             'cards.*.source_type' => 'required|string|max:255',
             'cards.*.state' => 'nullable|integer',
@@ -100,15 +105,27 @@ class PracticeCardController extends Controller
             $out = [];
 
             foreach ($cardsByBlock as $entry) {
-                $card = PracticeCard::updateOrCreate(
-                    [
-                        'user_id' => $userId,
-                        'block_id' => $entry['block_id'],
-                    ],
-                    [
-                        'course_id' => $entry['course_id'],
-                        'lesson_id' => $entry['lesson_id'],
-                        'source_type' => $entry['source_type'],
+                $existing = PracticeCard::where('user_id', $userId)
+                    ->where('block_id', $entry['block_id'])
+                    ->first();
+
+                // Descriptive fields always follow the incoming payload.
+                $attributes = [
+                    'course_id' => $entry['course_id'],
+                    'lesson_id' => $entry['lesson_id'] ?? '',
+                    'source_type' => $entry['source_type'],
+                    'weight' => $entry['weight'] ?? 5.0,
+                    'avg_time_sec' => $entry['avg_time_sec'] ?? 20,
+                    'skip_condition' => $entry['skip_condition'] ?? null,
+                    'is_active' => $entry['is_active'] ?? true,
+                ];
+
+                // FSRS scheduling only moves forward. Two devices share one
+                // account and each pushes its own copy; a device that has not
+                // seen the latest review would otherwise reset the card to
+                // "due now" and the review would be lost on both (BR-ZBJ99Z).
+                if (! $this->isStaleSchedule($existing, $entry)) {
+                    $attributes += [
                         'state' => $entry['state'] ?? 0,
                         'due_date' => $entry['due_date'] ?? now(),
                         'stability' => $entry['stability'] ?? 0.0,
@@ -118,11 +135,15 @@ class PracticeCardController extends Controller
                         'scheduled_days' => $entry['scheduled_days'] ?? 0,
                         'elapsed_days' => $entry['elapsed_days'] ?? 0,
                         'last_review' => $entry['last_review'] ?? null,
-                        'weight' => $entry['weight'] ?? 5.0,
-                        'avg_time_sec' => $entry['avg_time_sec'] ?? 20,
-                        'skip_condition' => $entry['skip_condition'] ?? null,
-                        'is_active' => $entry['is_active'] ?? true,
-                    ]
+                    ];
+                }
+
+                $card = PracticeCard::updateOrCreate(
+                    [
+                        'user_id' => $userId,
+                        'block_id' => $entry['block_id'],
+                    ],
+                    $attributes
                 );
 
                 $out[] = [
@@ -138,5 +159,32 @@ class PracticeCardController extends Controller
         return response()->json([
             'data' => $results,
         ], 200);
+    }
+
+    /**
+     * Whether an incoming card carries an older schedule than the stored one.
+     *
+     * Compares last_review (the moment the schedule was produced) and falls
+     * back to the repetition count when the client sends no review timestamp —
+     * a freshly seeded card has reps 0 and no last_review, so it can never
+     * clobber a card the account has already practised.
+     *
+     * @param  array<string, mixed>  $entry
+     */
+    private function isStaleSchedule(?PracticeCard $existing, array $entry): bool
+    {
+        if ($existing === null || $existing->last_review === null) {
+            return false;
+        }
+
+        $incoming = $entry['last_review'] ?? null;
+
+        if ($incoming === null) {
+            // No review on the incoming card: only accept it if it claims at
+            // least as many repetitions as the stored one.
+            return ($entry['reps'] ?? 0) < $existing->reps;
+        }
+
+        return $existing->last_review->gt(new \DateTimeImmutable($incoming));
     }
 }

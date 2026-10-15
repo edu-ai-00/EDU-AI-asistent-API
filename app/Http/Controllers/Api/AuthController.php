@@ -49,6 +49,18 @@ class AuthController extends Controller
      */
     public function registerVerified(Request $request): JsonResponse
     {
+        // A minor's session must never be able to write a real name into the
+        // database (BR-8FDF37, decision 7) — mirrors updateProfile's guard.
+        // This endpoint is public (no auth:sanctum), so the caller is only
+        // known when a bearer token was sent; auth.optional (routes/api.php)
+        // resolves it the same way /guest/claim and /email/verify do.
+        $caller = $request->user('sanctum');
+        if ($caller && $caller->is_minor) {
+            return response()->json([
+                'message' => 'Přezdívku u dětského účtu nelze měnit.',
+            ], 403);
+        }
+
         $validated = $request->validate([
             'email' => 'required|string|email|max:255',
             'name' => 'required|string|max:255',
@@ -86,6 +98,21 @@ class AuthController extends Controller
                 'merged_into' => $user->merged_into_user_id,
             ], 410);
         }
+
+        // Defence in depth alongside the caller guard above: a minor account
+        // never legitimately gets an email attached today (provisionChildren
+        // never sets one, and /guest/claim already refuses non-guest callers),
+        // but if some future path ever left one on a minor row, this endpoint
+        // must still refuse to overwrite that row's name.
+        if ($user && $user->is_minor) {
+            return response()->json([
+                'message' => 'Přezdívku u dětského účtu nelze měnit.',
+            ], 403);
+        }
+
+        // Refuse before the profile write below, not just at token issuance
+        // (BR-Q3ZJ6Q).
+        $user?->ensureCanSignIn();
 
         if ($user) {
             // Existing user - only update profile fields if non-empty values provided
@@ -128,6 +155,7 @@ class AuthController extends Controller
                 'email' => $user->email,
                 'avatar_index' => $user->avatar_index,
                 'selected_subjects' => $user->selected_subjects,
+                'onboarded_at' => $user->onboarded_at?->toIso8601String(),
                 'email_verified_at' => $user->email_verified_at,
             ],
             'token' => $issued['plainTextToken'],
@@ -239,7 +267,28 @@ class AuthController extends Controller
 
     public function user(Request $request): JsonResponse
     {
-        return response()->json($request->user());
+        $user = $request->user();
+
+        // login_code_hash is a minor's SOLE credential and login_code is a
+        // school student's live credential in plaintext — neither belongs
+        // in a session-bootstrap response the Flutter client may cache or
+        // log (BR-8FDF37 I7). ConsentManageController::show() already holds
+        // guardians to this standard for the same columns; stripped
+        // explicitly here rather than via User::$hidden, because
+        // AdminClassroomController's classroom views still need login_code
+        // serialisable.
+        $payload = collect($user->toArray())->except(['login_code', 'login_code_hash'])->all();
+
+        return response()->json([
+            ...$payload,
+            'is_minor' => (bool) $user->is_minor,
+            // Classes the student is a member of (BR-3V2P22); the app shows
+            // them in Upravit profil next to the "join a class" button.
+            'classrooms' => $user->classrooms()->get(['classrooms.id', 'classrooms.name'])
+                ->map(fn ($c) => ['id' => $c->id, 'name' => $c->name])
+                ->values()
+                ->all(),
+        ]);
     }
 
     /**
@@ -351,6 +400,10 @@ class AuthController extends Controller
         // orphaned on the guest row (BR-4FTCFH).
         $existing = User::where('email', $email)->where('id', '!=', $user->id)->first();
         if ($existing) {
+            // A deactivated account must not receive the guest's data
+            // (BR-Q3ZJ6Q).
+            $existing->ensureCanSignIn();
+
             $merge = $mergeService->absorbGuest($user, $existing);
 
             if ($merge === null) {
@@ -425,9 +478,19 @@ class AuthController extends Controller
      */
     public function updateProfile(Request $request): JsonResponse
     {
+        // A minor account is pseudonymous by design — the display name is
+        // server-generated and must stay that way (BR-8FDF37). Avatar
+        // changes carry no personal data and stay allowed.
+        if ($request->user()->is_minor && $request->has('name')) {
+            return response()->json([
+                'message' => 'Přezdívku u dětského účtu nelze měnit.',
+            ], 403);
+        }
+
         $validated = $request->validate([
             'name' => 'sometimes|required|string|max:255',
             'avatar_index' => 'sometimes|integer|min:0|max:10',
+            'onboarding_completed' => 'sometimes|boolean',
         ]);
 
         $user = $request->user();
@@ -442,6 +505,15 @@ class AuthController extends Controller
 
         $user->save();
 
+        // The onboarding rides on the profile write the client already
+        // queues, rather than on an endpoint of its own: that is what makes
+        // finishing it offline survive — the sync queue merges it into the
+        // pending users entry and retries until it lands (BR-YXVMKY). Only
+        // ever set, never cleared: nothing un-joins an account.
+        if ($validated['onboarding_completed'] ?? false) {
+            $user->markOnboarded();
+        }
+
         return response()->json([
             'success' => true,
             'user' => [
@@ -450,6 +522,7 @@ class AuthController extends Controller
                 'email' => $user->email,
                 'avatar_index' => $user->avatar_index,
                 'selected_subjects' => $user->selected_subjects,
+                'onboarded_at' => $user->onboarded_at?->toIso8601String(),
             ],
         ]);
     }

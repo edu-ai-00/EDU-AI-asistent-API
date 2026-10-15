@@ -116,6 +116,34 @@ class UserCourseController extends Controller
             'progress_data' => 'sometimes|array',
         ]);
 
+        // Progress never regresses server-side (mirrors the client's own
+        // "never regress" pull rule). A client that synced before a profile
+        // merge may push stale, lower values and would otherwise wipe the
+        // merged best-of result.
+        if (isset($validated['progress_percent'])) {
+            $validated['progress_percent'] = max(
+                (int) $validated['progress_percent'],
+                (int) $userCourse->progress_percent
+            );
+        }
+        if (isset($validated['completed_lessons'])) {
+            $validated['completed_lessons'] = max(
+                (int) $validated['completed_lessons'],
+                (int) $userCourse->completed_lessons
+            );
+        }
+        if (isset($validated['time_spent_seconds'])) {
+            $validated['time_spent_seconds'] = max(
+                (int) $validated['time_spent_seconds'],
+                (int) $userCourse->time_spent_seconds
+            );
+        }
+        // Never downgrade a completed course.
+        if ($userCourse->status === 'completed' && ($validated['status'] ?? null) !== null
+            && $validated['status'] !== 'completed') {
+            unset($validated['status']);
+        }
+
         // Handle status transitions.
         if (isset($validated['status'])) {
             $newStatus = $validated['status'];

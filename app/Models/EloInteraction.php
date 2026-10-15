@@ -9,16 +9,22 @@ class EloInteraction extends Model
 {
     protected $fillable = [
         'user_id',
+        'client_uuid',
         'block_id',
         'course_id',
         'source',
         'score',
+        'profil_elo_before',
         'profil_elo_snapshot',
+        'elo_vector_used',
         'elo_vector_snapshot',
+        'task_applied',
+        'task_skip_reason',
         'updated_indices',
         'opened_at',
         'confirmed_at',
         'duration_ms',
+        'elo_config_version',
     ];
 
     /**
@@ -30,8 +36,11 @@ class EloInteraction extends Model
     {
         return [
             'score' => 'float',
+            'profil_elo_before' => 'array',
             'profil_elo_snapshot' => 'array',
+            'elo_vector_used' => 'array',
             'elo_vector_snapshot' => 'array',
+            'task_applied' => 'boolean',
             'updated_indices' => 'array',
             'opened_at' => 'datetime',
             'confirmed_at' => 'datetime',

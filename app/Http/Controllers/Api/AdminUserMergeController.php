@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\User;
+use App\Services\AuditLogger;
 use App\Services\UserMergeService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -19,9 +21,10 @@ use Illuminate\Http\Request;
  */
 class AdminUserMergeController extends Controller
 {
-    public function __construct(private readonly UserMergeService $service)
-    {
-    }
+    public function __construct(
+        private readonly UserMergeService $service,
+        private readonly AuditLogger $audit,
+    ) {}
 
     /**
      * GET /api/admin/users/merge/preview
@@ -70,6 +73,12 @@ class AdminUserMergeController extends Controller
             (int) $validated['target_id'],
             (int) $request->user()->id,
         );
+
+        // user_merges keeps the full snapshot; the unified log points at it.
+        $this->audit->log('user.merged', User::find($audit->target_user_id), meta: [
+            'merge_id' => $audit->id,
+            'source_user_id' => $audit->source_user_id,
+        ]);
 
         return response()->json([
             'data' => [

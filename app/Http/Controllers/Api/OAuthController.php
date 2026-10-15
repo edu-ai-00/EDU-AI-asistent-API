@@ -8,6 +8,7 @@ use App\Services\AppleIdTokenVerifier;
 use App\Services\GoogleIdTokenVerifier;
 use App\Services\InvalidIdTokenException;
 use App\Services\MicrosoftIdTokenVerifier;
+use App\Services\UserMergeService;
 use App\Support\SessionTokens;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -18,6 +19,7 @@ class OAuthController extends Controller
         private GoogleIdTokenVerifier $googleVerifier,
         private AppleIdTokenVerifier $appleVerifier,
         private MicrosoftIdTokenVerifier $microsoftVerifier,
+        private UserMergeService $mergeService,
     ) {
     }
 
@@ -35,6 +37,7 @@ class OAuthController extends Controller
         $request->validate([
             'id_token' => 'required|string',
             'shared_device' => 'sometimes|boolean',
+            'allow_registration' => 'sometimes|boolean',
         ]);
 
         try {
@@ -76,6 +79,7 @@ class OAuthController extends Controller
             'user' => 'sometimes|array',
             'user.name' => 'sometimes|string|max:255',
             'shared_device' => 'sometimes|boolean',
+            'allow_registration' => 'sometimes|boolean',
         ]);
 
         try {
@@ -117,6 +121,7 @@ class OAuthController extends Controller
         $request->validate([
             'id_token' => 'required|string',
             'shared_device' => 'sometimes|boolean',
+            'allow_registration' => 'sometimes|boolean',
         ]);
 
         try {
@@ -145,6 +150,13 @@ class OAuthController extends Controller
     /**
      * Find or create the user for a verified email and issue a session token.
      * Shared by all social providers once they've validated their token.
+     *
+     * `allow_registration: false` turns this into sign-in only: an unknown
+     * email gets a 409 instead of an account. The client uses that to tell
+     * "signing back in" from "registering" without having created anything —
+     * a returning user must not be asked the age gate, and a minor's account
+     * must not exist before guardian consent (BR-VTNTMQ, BR-N9Y48J). Absent,
+     * the flag defaults to true so older app builds keep working.
      */
     private function loginByEmail(string $email, string $nameFallback, Request $request): JsonResponse
     {
@@ -156,6 +168,17 @@ class OAuthController extends Controller
                 'message' => 'Profil byl sloučen do jiného účtu.',
                 'merged_into' => $user->merged_into_user_id,
             ], 410);
+        }
+
+        // Before email_verified_at or the guest merge below touch the account
+        // (BR-Q3ZJ6Q).
+        $user?->ensureCanSignIn();
+
+        if (! $user && ! $request->boolean('allow_registration', true)) {
+            return response()->json([
+                'message' => 'Tento účet zatím neexistuje.',
+                'error' => 'registration_required',
+            ], 409);
         }
 
         $isNewUser = false;
@@ -172,10 +195,24 @@ class OAuthController extends Controller
             $user->forceFill(['email_verified_at' => now()])->save();
         }
 
+        // If the caller is currently an anonymous guest (its bearer token is
+        // still the guest's at this point), fold the guest's courses/progress
+        // into the account being signed into — same as /email/verify
+        // (BR-4FTCFH). Skipped on shared devices, where the leftover guest is
+        // likely a different person (BR-ZDXP7C).
+        if (! $request->boolean('shared_device')) {
+            $this->mergeService->absorbGuest($request->user('sanctum'), $user);
+            $user->refresh();
+        }
+
         $issued = SessionTokens::issueLogin($user, $request);
 
-        // Route new users (or those who never picked subjects) into onboarding.
-        $profileSetupRequired = $isNewUser || empty($user->selected_subjects);
+        // Route into onboarding exactly once, on the account's first entry.
+        // This used to also fire for any account with no selected_subjects —
+        // but nothing writes that column on the SSO path, so every single SSO
+        // login re-ran the onboarding forever (BR-YXVMKY). onboarded_at is
+        // the account's own record of having been through it.
+        $profileSetupRequired = ! $user->hasOnboarded();
 
         return response()->json([
             'is_new_user' => $isNewUser,

@@ -117,6 +117,10 @@ class CourseStorageService
 
         return [
             'course_id' => $courseData['course_id'],
+            // Translation group + structural fingerprint (BR-AYACEK). A course
+            // with no explicit group is its own group of one.
+            'translation_key' => $courseData['translation_key'] ?? $courseData['course_id'],
+            'structure_hash' => CourseStructureFingerprint::compute($courseData),
             'pin' => isset($courseData['pin']) && $courseData['pin'] !== ''
                 ? strtoupper((string) $courseData['pin'])
                 : null,
@@ -125,6 +129,7 @@ class CourseStorageService
             'only_once' => (bool) ($courseData['only_once'] ?? false),
             'logged_only' => (bool) ($courseData['logged_only'] ?? false),
             'quiz_evaluate' => (bool) ($courseData['quiz_evaluate'] ?? false),
+            'open_all_lessons' => (bool) ($courseData['open_all_lessons'] ?? false),
             'name' => $courseData['name'] ?? 'Untitled Course',
             'description' => $courseData['description'] ?? null,
             'author' => $courseData['author'] ?? null,
@@ -174,6 +179,7 @@ class CourseStorageService
             'only_once' => (bool) ($courseData['only_once'] ?? false),
             'logged_only' => (bool) ($courseData['logged_only'] ?? false),
             'quiz_evaluate' => (bool) ($courseData['quiz_evaluate'] ?? false),
+            'open_all_lessons' => (bool) ($courseData['open_all_lessons'] ?? false),
         ];
     }
 

@@ -3,34 +3,101 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Concerns\FormatsExportTiming;
+use App\Http\Controllers\Concerns\LoadsHintHelpUsage;
 use App\Http\Controllers\Controller;
-use App\Models\BlockStat;
 use App\Models\Course;
 use App\Models\EloInteraction;
 use App\Models\UserCourse;
+use App\Services\AuditLogger;
+use App\Services\TaskCalibrationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class EloInteractionController extends Controller
 {
-    use FormatsExportTiming;
+    use FormatsExportTiming, LoadsHintHelpUsage;
 
     /**
-     * Log a single ELO interaction.
-     * Optionally increments block_stats.item_pocet via item_pocet_delta.
+     * Log a single ELO interaction and apply its task half on the server
+     * (BR-697NCA, see TaskCalibrationService). A retry carrying a
+     * client_uuid the server already stored returns that row unchanged.
+     *
+     * `item_pocet_delta` and `elo_vector_snapshot` are still accepted from
+     * older builds but ignored: the server is the only writer of D and m, and
+     * the snapshot is the server's D after this answer.
      *
      * POST /api/elo/interactions
      */
-    public function store(Request $request): JsonResponse
+    public function store(Request $request, TaskCalibrationService $calibration): JsonResponse
+    {
+        $validated = $request->validate($this->interactionRules(''));
+
+        [$interaction, $created] = $calibration->record($request->user(), $this->interactionAttributes($validated));
+
+        return response()->json([
+            'id' => $interaction->id,
+            'created_at' => $interaction->created_at->toIso8601String(),
+            'task_applied' => $interaction->task_applied,
+        ], $created ? 201 : 200);
+    }
+
+    /**
+     * Batch log ELO interactions (for offline sync).
+     *
+     * One transaction per item, so an item stored before a failure is never
+     * applied twice when the app falls back to sending them one by one — its
+     * client_uuid finds the stored row.
+     *
+     * POST /api/elo/interactions/batch
+     */
+    public function storeBatch(Request $request, TaskCalibrationService $calibration): JsonResponse
     {
         $validated = $request->validate([
+            'interactions' => 'required|array|min:1',
+            ...$this->interactionRules('interactions.*.'),
+        ]);
+
+        $user = $request->user();
+        $results = [];
+
+        foreach ($validated['interactions'] as $entry) {
+            [$interaction] = $calibration->record($user, $this->interactionAttributes($entry));
+
+            $results[] = [
+                'id' => $interaction->id,
+                'block_id' => $interaction->block_id,
+                'created_at' => $interaction->created_at->toIso8601String(),
+                'task_applied' => $interaction->task_applied,
+            ];
+        }
+
+        return response()->json([
+            'data' => $results,
+        ]);
+    }
+
+    /**
+     * Validation rules for one interaction, under $prefix.
+     *
+     * @return array<string, string>
+     */
+    private function interactionRules(string $prefix): array
+    {
+        $rules = [
+            'client_uuid' => 'nullable|string|max:64',
             'block_id' => 'required|string|max:255',
             'course_id' => 'required|string|max:255',
             'score' => 'required|numeric|min:0|max:1',
             'source' => 'nullable|string|in:lesson,quiz',
+            'profil_elo_before' => 'nullable|array',
+            'profil_elo_before.*' => 'nullable|numeric',
             'profil_elo_snapshot' => 'nullable|array',
             'profil_elo_snapshot.*' => 'nullable|numeric',
+            'elo_vector_used' => 'nullable|array',
+            'elo_vector_used.*' => 'nullable|numeric',
+            // Sent by builds up to 1.0.24+34; ignored (see store()).
             'elo_vector_snapshot' => 'nullable|array',
             'elo_vector_snapshot.*' => 'nullable|numeric',
             'updated_indices' => 'nullable|array',
@@ -40,101 +107,109 @@ class EloInteractionController extends Controller
             'opened_at' => 'nullable|date',
             'confirmed_at' => 'nullable|date',
             'duration_ms' => 'nullable|integer|min:0',
-        ]);
+            'elo_config_version' => 'nullable|string|max:64',
+        ];
 
-        $interaction = EloInteraction::create([
-            'user_id' => $request->user()->id,
-            'block_id' => $validated['block_id'],
-            'course_id' => $validated['course_id'],
-            'source' => $validated['source'] ?? null,
-            'score' => $validated['score'],
-            'profil_elo_snapshot' => $validated['profil_elo_snapshot'] ?? null,
-            'elo_vector_snapshot' => $validated['elo_vector_snapshot'] ?? null,
-            'updated_indices' => $validated['updated_indices'] ?? null,
-            'opened_at' => $validated['opened_at'] ?? null,
-            'confirmed_at' => $validated['confirmed_at'] ?? null,
-            'duration_ms' => $this->resolveDuration(
-                $validated['duration_ms'] ?? null,
-                $validated['opened_at'] ?? null,
-                $validated['confirmed_at'] ?? null,
-            ),
-        ]);
-
-        // Increment block stats if delta provided
-        if (! empty($validated['item_pocet_delta'])) {
-            $this->applyItemPocetDelta($validated['block_id'], $validated['item_pocet_delta']);
+        $prefixed = [];
+        foreach ($rules as $field => $rule) {
+            $prefixed[$prefix.$field] = $rule;
         }
 
-        return response()->json([
-            'id' => $interaction->id,
-            'created_at' => $interaction->created_at->toIso8601String(),
-        ], 201);
+        return $prefixed;
     }
 
     /**
-     * Batch log ELO interactions (for offline sync).
-     * Accepts an array of interactions and processes each one.
+     * The EloInteraction attributes the app decides. The server adds the
+     * user and the calibration outcome (task_applied, task_skip_reason,
+     * elo_vector_snapshot).
      *
-     * POST /api/elo/interactions/batch
+     * @return array<string, mixed>
      */
-    public function storeBatch(Request $request): JsonResponse
+    private function interactionAttributes(array $entry): array
+    {
+        return [
+            'client_uuid' => $entry['client_uuid'] ?? null,
+            'block_id' => $entry['block_id'],
+            'course_id' => $entry['course_id'],
+            'source' => $entry['source'] ?? null,
+            'score' => $entry['score'],
+            'profil_elo_before' => $entry['profil_elo_before'] ?? null,
+            'profil_elo_snapshot' => $entry['profil_elo_snapshot'] ?? null,
+            'elo_vector_used' => $entry['elo_vector_used'] ?? null,
+            'updated_indices' => $entry['updated_indices'] ?? null,
+            'opened_at' => $entry['opened_at'] ?? null,
+            'confirmed_at' => $entry['confirmed_at'] ?? null,
+            'duration_ms' => $this->resolveDuration(
+                $entry['duration_ms'] ?? null,
+                $entry['opened_at'] ?? null,
+                $entry['confirmed_at'] ?? null,
+            ),
+            // The app computed this update, so its engine version is the one
+            // that applies (BR-EBNMBF). Never defaulted server-side.
+            'elo_config_version' => $entry['elo_config_version'] ?? null,
+        ];
+    }
+
+    /**
+     * How many of a block's most recent reaction times the gaming reference
+     * carries. The robust threshold is a median, so a recent window estimates
+     * it as well as the full history while keeping the payload bounded.
+     */
+    public const GAMING_REFERENCE_LIMIT = 200;
+
+    /**
+     * Previous valid, non-gaming reaction times per task, for the Pilot 2
+     * robust gaming threshold (BR-H3TCRE). The app feeds them to
+     * GamingGuard.classify: under ten it keeps the fixed 2 s floor, from ten on
+     * it uses median/MAD over their log-times.
+     *
+     * The rows are the quiz interactions the app already logs — it only logs
+     * an answer that was not a guess, with the display → submit time it
+     * measured — from students across every school. Left out:
+     *   - lesson rows: their timing is persisted separately and older rows
+     *     predate the lesson gaming guard (BR-3N79C3);
+     *   - teacher/admin rows: staff checking a quiz are not the task's students;
+     *   - whole-second durations: runTimestampBackfill fills pre-tracking quiz
+     *     rows with estimates built from second-precision created_at, while
+     *     the app always sends the millisecond duration it measured. Dropping
+     *     the 1-in-1000 real answer that lands on a whole second costs nothing.
+     *
+     * GET /api/elo/gaming-reference?block_ids=a,b
+     * → { data: { "<block_id>": [seconds, …] } } — every requested block, [] when none.
+     */
+    public function gamingReference(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'interactions' => 'required|array|min:1',
-            'interactions.*.block_id' => 'required|string|max:255',
-            'interactions.*.course_id' => 'required|string|max:255',
-            'interactions.*.score' => 'required|numeric|min:0|max:1',
-            'interactions.*.source' => 'nullable|string|in:lesson,quiz',
-            'interactions.*.profil_elo_snapshot' => 'nullable|array',
-            'interactions.*.profil_elo_snapshot.*' => 'nullable|numeric',
-            'interactions.*.elo_vector_snapshot' => 'nullable|array',
-            'interactions.*.elo_vector_snapshot.*' => 'nullable|numeric',
-            'interactions.*.updated_indices' => 'nullable|array',
-            'interactions.*.updated_indices.*' => 'nullable|integer',
-            'interactions.*.item_pocet_delta' => 'nullable|array',
-            'interactions.*.item_pocet_delta.*' => 'nullable|integer',
-            'interactions.*.opened_at' => 'nullable|date',
-            'interactions.*.confirmed_at' => 'nullable|date',
-            'interactions.*.duration_ms' => 'nullable|integer|min:0',
+            'block_ids' => 'required|string|max:20000',
         ]);
 
-        $userId = $request->user()->id;
-        $results = [];
+        $blockIds = array_slice(array_values(array_unique(array_filter(
+            array_map('trim', explode(',', $validated['block_ids'])),
+            fn (string $id) => $id !== ''
+        ))), 0, 200);
 
-        foreach ($validated['interactions'] as $entry) {
-            $interaction = EloInteraction::create([
-                'user_id' => $userId,
-                'block_id' => $entry['block_id'],
-                'course_id' => $entry['course_id'],
-                'source' => $entry['source'] ?? null,
-                'score' => $entry['score'],
-                'profil_elo_snapshot' => $entry['profil_elo_snapshot'] ?? null,
-                'elo_vector_snapshot' => $entry['elo_vector_snapshot'] ?? null,
-                'updated_indices' => $entry['updated_indices'] ?? null,
-                'opened_at' => $entry['opened_at'] ?? null,
-                'confirmed_at' => $entry['confirmed_at'] ?? null,
-                'duration_ms' => $this->resolveDuration(
-                    $entry['duration_ms'] ?? null,
-                    $entry['opened_at'] ?? null,
-                    $entry['confirmed_at'] ?? null,
-                ),
-            ]);
+        $ranked = DB::table('elo_interactions')
+            ->join('users', 'users.id', '=', 'elo_interactions.user_id')
+            ->whereIn('elo_interactions.block_id', $blockIds)
+            ->where('elo_interactions.source', 'quiz')
+            ->whereNotIn('users.role', ['admin', 'teacher'])
+            ->where('elo_interactions.duration_ms', '>', 0)
+            ->whereRaw('elo_interactions.duration_ms % 1000 <> 0')
+            ->select('elo_interactions.block_id', 'elo_interactions.duration_ms')
+            ->selectRaw('ROW_NUMBER() OVER (PARTITION BY elo_interactions.block_id ORDER BY elo_interactions.id DESC) AS rn');
 
-            // Increment block stats if delta provided
-            if (! empty($entry['item_pocet_delta'])) {
-                $this->applyItemPocetDelta($entry['block_id'], $entry['item_pocet_delta']);
-            }
+        $rows = DB::query()
+            ->fromSub($ranked, 'ranked')
+            ->where('rn', '<=', self::GAMING_REFERENCE_LIMIT)
+            ->get(['block_id', 'duration_ms']);
 
-            $results[] = [
-                'id' => $interaction->id,
-                'block_id' => $interaction->block_id,
-                'created_at' => $interaction->created_at->toIso8601String(),
-            ];
+        $reference = array_fill_keys($blockIds, []);
+        foreach ($rows as $row) {
+            $reference[$row->block_id][] = ((int) $row->duration_ms) / 1000;
         }
 
-        return response()->json([
-            'data' => $results,
-        ]);
+        // An object even when empty or when block ids look numeric.
+        return response()->json(['data' => (object) $reference]);
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -227,10 +302,19 @@ class EloInteractionController extends Controller
      * the export reflects the full lesson traversal. Timing columns prefer
      * the dedicated columns on `elo_interactions` (populated by the
      * client + backfill) and fall back to `progress_data` when needed.
+     *
+     * The trailing hint / help / assistant columns report every time the
+     * student opened assistance on that block (BR-SPYYKR), so a fast answer
+     * that followed a help open is distinguishable from an unaided one.
+     *
+     * "Verze ELO" is the ELO configuration the row was computed with
+     * (BR-EBNMBF). It sits last so formulas written against the earlier
+     * columns keep their positions; rows without an ELO interaction, and
+     * interactions logged before the version was recorded, leave it empty.
      */
-    public function exportCsv(string $courseId): StreamedResponse
+    public function exportCsv(AuditLogger $audit, string $courseId): StreamedResponse
     {
-        $interactions = EloInteraction::with('user:id,name,email,classroom_id')
+        $interactions = EloInteraction::with('user:id,name,email', 'user.classrooms:classrooms.id')
             ->where('course_id', $courseId)
             ->orderBy('created_at', 'asc')
             ->get();
@@ -247,10 +331,10 @@ class EloInteractionController extends Controller
             : [];
         $userIds = array_values(array_unique(array_merge($interactionUserIds, $progressUserIds)));
 
-        // Pre-load users for classroom_id display.
+        // Pre-load users for the classroom column.
         $userMap = [];
         if (! empty($userIds)) {
-            foreach (\App\Models\User::whereIn('id', $userIds)->get(['id', 'classroom_id']) as $u) {
+            foreach (\App\Models\User::whereIn('id', $userIds)->with('classrooms:classrooms.id')->get(['id']) as $u) {
                 $userMap[$u->id] = $u;
             }
         }
@@ -280,6 +364,10 @@ class EloInteractionController extends Controller
             }
         }
 
+        // Assistance opens keyed "{user_id}:{block_id}", merged across the
+        // lesson / quiz / user_progress copies the client writes.
+        $hintHelp = $this->buildHintHelpMap($courseId, $courseIntId, $userIds);
+
         $sourceLabels = ['lesson' => 'Lekce', 'quiz' => 'Kvíz'];
 
         $headers = [
@@ -296,12 +384,20 @@ class EloInteractionController extends Controller
             'Otevřeno',
             'Potvrzeno',
             'Doba',
+            ...$this->hintHelpHeaders(),
+            'Verze ELO',
         ];
 
         $filename = 'elo-export-'.$courseId.'-'.now()->format('Y-m-d').'.csv';
 
+        $audit->log('export.elo_interactions', $courseRecord, meta: [
+            'course_id' => $courseId,
+            'student_count' => count($userIds),
+            'format' => 'csv',
+        ]);
+
         return response()->streamDownload(function () use (
-            $interactions, $lessonTraversal,
+            $interactions, $lessonTraversal, $hintHelp,
             $sourceLabels, $headers, $userMap, $courseId
         ) {
             $handle = fopen('php://output', 'w');
@@ -338,7 +434,7 @@ class EloInteractionController extends Controller
 
                 fputcsv($handle, [
                     $i->user_id,
-                    $i->user->classroom_id ?? '',
+                    $i->user ? $i->user->classrooms->pluck('id')->implode(';') : '',
                     $i->block_id,
                     $i->course_id,
                     $sourceLabels[$i->source] ?? $i->source ?? '',
@@ -350,6 +446,8 @@ class EloInteractionController extends Controller
                     $openedAt ? $openedAt->format('H:i:s') : '',
                     $confirmedAt ? $confirmedAt->format('H:i:s') : '',
                     $duration,
+                    ...$this->hintHelpCells($hintHelp[$tsKey] ?? null),
+                    $i->elo_config_version ?? '',
                 ], "\t");
 
                 if (($i->source ?? 'lesson') === 'lesson') {
@@ -382,7 +480,7 @@ class EloInteractionController extends Controller
 
                 fputcsv($handle, [
                     $userId,
-                    $userMap[$userId]->classroom_id ?? '',
+                    isset($userMap[$userId]) ? $userMap[$userId]->classrooms->pluck('id')->implode(';') : '',
                     $blockId,
                     $courseId,
                     $sourceLabels['lesson'],
@@ -394,6 +492,8 @@ class EloInteractionController extends Controller
                     $openedAt ? $openedAt->format('H:i:s') : '',
                     $confirmedAt ? $confirmedAt->format('H:i:s') : '',
                     $duration,
+                    ...$this->hintHelpCells($hintHelp[$key] ?? null),
+                    '', // no ELO interaction → no config version
                 ], "\t");
             }
 
@@ -429,27 +529,5 @@ class EloInteractionController extends Controller
         }
 
         return null;
-    }
-
-    /**
-     * Apply item_pocet_delta increments to the block_stats record.
-     * Upserts the BlockStat and element-wise adds the delta to item_pocet.
-     */
-    private function applyItemPocetDelta(string $blockId, array $delta): void
-    {
-        $blockStat = BlockStat::firstOrCreate(
-            ['block_id' => $blockId],
-            ['item_pocet' => array_fill(0, count($delta), 0)]
-        );
-
-        $current = $blockStat->item_pocet ?? array_fill(0, count($delta), 0);
-
-        // Element-wise addition
-        $updated = [];
-        for ($i = 0; $i < count($delta); $i++) {
-            $updated[$i] = ($current[$i] ?? 0) + ($delta[$i] ?? 0);
-        }
-
-        $blockStat->update(['item_pocet' => $updated]);
     }
 }

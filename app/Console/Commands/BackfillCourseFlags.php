@@ -9,7 +9,7 @@ use Illuminate\Console\Command;
 class BackfillCourseFlags extends Command
 {
     protected $signature = 'courses:backfill-flags';
-    protected $description = 'Backfill display metadata (lesson_count, estimated_minutes, description, emoji, author) and flags (starts_with_quiz, only_once, logged_only, quiz_evaluate, pin) from stored course JSON data';
+    protected $description = 'Backfill display metadata (lesson_count, estimated_minutes, description, emoji, author) and flags (starts_with_quiz, only_once, logged_only, quiz_evaluate, open_all_lessons, pin) from stored course JSON data';
 
     public function handle(CourseStorageService $storageService): int
     {
@@ -46,6 +46,11 @@ class BackfillCourseFlags extends Command
 
             if (isset($data['quiz_evaluate'])) {
                 $course->quiz_evaluate = (bool) $data['quiz_evaluate'];
+                $changed = true;
+            }
+
+            if (isset($data['open_all_lessons'])) {
+                $course->open_all_lessons = (bool) $data['open_all_lessons'];
                 $changed = true;
             }
 

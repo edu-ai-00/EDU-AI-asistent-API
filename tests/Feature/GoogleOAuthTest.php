@@ -54,6 +54,29 @@ class GoogleOAuthTest extends TestCase
         ]);
     }
 
+    public function test_an_sso_account_is_not_re_onboarded_on_every_login(): void
+    {
+        // The reported bug (BR-YXVMKY): this used to be answered with
+        // "does the account have selected_subjects", and nothing on the SSO
+        // path ever writes that column — so an account created by SSO was
+        // sent back through the onboarding on every single sign-in.
+        User::factory()->create([
+            'email' => 'sso@example.com',
+            'selected_subjects' => null,
+        ]);
+
+        $this->fakeVerifierReturning([
+            'sub' => '7',
+            'email' => 'sso@example.com',
+            'email_verified' => true,
+            'name' => 'Returning',
+        ]);
+
+        $this->postJson('/api/auth/google', ['id_token' => 'anything'])
+            ->assertOk()
+            ->assertJsonPath('profile_setup_required', false);
+    }
+
     public function test_existing_user_logs_in_without_profile_setup(): void
     {
         $user = User::factory()->create([
@@ -77,6 +100,73 @@ class GoogleOAuthTest extends TestCase
         ]);
         $this->assertSame($user->id, $response->json('user.id'));
         $this->assertDatabaseCount('users', 1);
+    }
+
+    /**
+     * Sign-in only: the client asks whether this credential already has an
+     * account without creating one, so a returning user is never put through
+     * the age gate and a minor's account never exists before consent
+     * (BR-VTNTMQ).
+     */
+    public function test_unknown_email_is_not_registered_when_registration_is_disallowed(): void
+    {
+        $this->fakeVerifierReturning([
+            'sub' => '55',
+            'email' => 'stranger@example.com',
+            'email_verified' => true,
+            'name' => 'Stranger',
+        ]);
+
+        $response = $this->postJson('/api/auth/google', [
+            'id_token' => 'anything',
+            'allow_registration' => false,
+        ]);
+
+        $response->assertStatus(409);
+        $response->assertJson(['error' => 'registration_required']);
+        $this->assertNull($response->json('token'));
+        $this->assertDatabaseCount('users', 0);
+    }
+
+    public function test_existing_user_still_signs_in_when_registration_is_disallowed(): void
+    {
+        $user = User::factory()->create([
+            'email' => 'known@example.com',
+            'selected_subjects' => ['math'],
+        ]);
+
+        $this->fakeVerifierReturning([
+            'sub' => '56',
+            'email' => 'known@example.com',
+            'email_verified' => true,
+            'name' => 'Known',
+        ]);
+
+        $response = $this->postJson('/api/auth/google', [
+            'id_token' => 'anything',
+            'allow_registration' => false,
+        ]);
+
+        $response->assertOk();
+        $response->assertJson(['is_new_user' => false]);
+        $this->assertSame($user->id, $response->json('user.id'));
+        $this->assertNotEmpty($response->json('token'));
+    }
+
+    /** Older app builds send no flag at all and must keep registering. */
+    public function test_registration_is_allowed_by_default(): void
+    {
+        $this->fakeVerifierReturning([
+            'sub' => '57',
+            'email' => 'default@example.com',
+            'email_verified' => true,
+            'name' => 'Default',
+        ]);
+
+        $this->postJson('/api/auth/google', ['id_token' => 'anything'])
+            ->assertStatus(201);
+
+        $this->assertDatabaseHas('users', ['email' => 'default@example.com']);
     }
 
     public function test_invalid_token_is_rejected(): void

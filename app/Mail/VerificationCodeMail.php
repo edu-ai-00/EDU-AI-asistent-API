@@ -26,7 +26,7 @@ class VerificationCodeMail extends Mailable
     public function envelope(): Envelope
     {
         return new Envelope(
-            subject: 'Váš ověřovací kód pro EduAI',
+            subject: __('mail.verification.subject'),
         );
     }
 

@@ -59,7 +59,7 @@ Content-Type: application/json
 
 | Field | Type | Rules |
 |---|---|---|
-| `persona` | string | **Required.** One of: `ai_teacher`, `math_mentor`, `study_coach`, `language_mentor` |
+| `persona` | string | **Required.** One of: `ai_teacher`, `math_mentor`, `study_coach`, `language_mentor`, `skolnik`, `cermatik`. The last two are answered by the external RAG search service (`config/rag.php`) instead of the LLM — the whole answer arrives as a single SSE token, and the assistant message `metadata` carries `outcome`, `sources`, and `suggestions` from the RAG response. |
 | `title` | string | Optional, max 255. Empty string or null allowed. |
 
 **Response** `201`:

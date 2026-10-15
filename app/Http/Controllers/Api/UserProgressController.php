@@ -3,11 +3,13 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Concerns\FormatsExportTiming;
+use App\Http\Controllers\Concerns\LoadsHintHelpUsage;
 use App\Http\Controllers\Controller;
 use App\Models\Course;
 use App\Models\EloInteraction;
 use App\Models\UserCourse;
 use App\Models\UserProgress;
+use App\Services\AuditLogger;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -15,7 +17,7 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class UserProgressController extends Controller
 {
-    use FormatsExportTiming;
+    use FormatsExportTiming, LoadsHintHelpUsage;
 
     /**
      * Bulk upsert lesson progress.
@@ -189,7 +191,7 @@ class UserProgressController extends Controller
      */
     public function adminByCourse(Request $request, string $courseId): JsonResponse
     {
-        $query = UserProgress::with('user:id,name,email,classroom_id')
+        $query = UserProgress::with('user:id,name,email', 'user.classrooms:classrooms.id,name')
             ->where('course_id', $courseId);
 
         if ($request->filled('lesson_id')) {
@@ -218,7 +220,8 @@ class UserProgressController extends Controller
                     'id' => $p->user->id,
                     'name' => $p->user->name,
                     'email' => $p->user->email,
-                    'classroom_id' => $p->user->classroom_id,
+                    'classroom_ids' => $p->user->classrooms->pluck('id')->all(),
+                    'classroom_name' => $p->user->classroomNames() ?: null,
                 ] : null,
                 'lesson_id' => $p->lesson_id,
                 'progress_percent' => $p->progress_percent,
@@ -343,7 +346,7 @@ class UserProgressController extends Controller
         $course = Course::where('course_id', $courseId)->first();
         $answerKey = $this->buildAnswerKeyForCourse($course?->data);
 
-        $records = UserProgress::with('user:id,name,email,classroom_id')
+        $records = UserProgress::with('user:id,name,email', 'user.classrooms:classrooms.id,name')
             ->where('course_id', $courseId)
             ->orderBy('user_id')
             ->orderBy('lesson_id')
@@ -356,7 +359,7 @@ class UserProgressController extends Controller
                     'user_id' => $p->user_id,
                     'user_name' => $p->user?->name,
                     'user_email' => $p->user?->email,
-                    'classroom_id' => $p->user?->classroom_id,
+                    'classroom_ids' => $p->user ? $p->user->classrooms->pluck('id')->all() : [],
                     'lesson_id' => $p->lesson_id,
                     'updated_at' => $p->updated_at?->toIso8601String(),
                 ] + $row;
@@ -379,12 +382,12 @@ class UserProgressController extends Controller
      *
      * GET /api/admin/progress/{courseId}/answers/export
      */
-    public function adminCourseAnswersExport(string $courseId): StreamedResponse
+    public function adminCourseAnswersExport(AuditLogger $audit, string $courseId): StreamedResponse
     {
         $course = Course::where('course_id', $courseId)->first();
         $answerKey = $this->buildAnswerKeyForCourse($course?->data);
 
-        $records = UserProgress::with('user:id,name,email,classroom_id')
+        $records = UserProgress::with('user:id,name,email', 'user.classrooms:classrooms.id,name')
             ->where('course_id', $courseId)
             ->orderBy('user_id')
             ->orderBy('lesson_id')
@@ -392,11 +395,16 @@ class UserProgressController extends Controller
 
         // Per-block timing (Den/Otevřeno/Potvrzeno/Doba), keyed "user:block",
         // mirroring the ELO export so both files show the same values.
-        $timing = $this->buildAnswerTimingMap($courseId, $course?->id, $records->pluck('user_id')->unique()->all());
+        $userIds = $records->pluck('user_id')->unique()->values()->all();
+        $timing = $this->buildAnswerTimingMap($courseId, $course?->id, $userIds);
+
+        // Assistance opens (hint / help / assistant), mirroring the ELO export
+        // so both files agree on how much help a block took (BR-SPYYKR).
+        $hintHelp = $this->buildHintHelpMap($courseId, $course?->id, $userIds);
 
         $headers = [
             'ID žáka (interní)',
-            'Jméno',
+            'Přezdívka',
             'E-mail',
             'ID třídy (interní)',
             'Lekce',
@@ -412,11 +420,18 @@ class UserProgressController extends Controller
             'Otevřeno',
             'Potvrzeno',
             'Doba',
+            ...$this->hintHelpHeaders(),
         ];
 
         $filename = 'odpovedi-'.$courseId.'-'.now()->format('Y-m-d').'.csv';
 
-        return response()->streamDownload(function () use ($records, $answerKey, $headers, $timing) {
+        $audit->log('export.course_answers', $course, meta: [
+            'course_id' => $courseId,
+            'student_count' => count($userIds),
+            'format' => 'csv',
+        ]);
+
+        return response()->streamDownload(function () use ($records, $answerKey, $headers, $timing, $hintHelp) {
             $handle = fopen('php://output', 'w');
             // BOM so Excel reads UTF-8 correctly.
             fwrite($handle, "\xEF\xBB\xBF");
@@ -424,13 +439,15 @@ class UserProgressController extends Controller
 
             foreach ($records as $p) {
                 foreach ($this->extractAnswerRows($p, $answerKey) as $row) {
-                    $timingCells = $this->timingCells($timing[$p->user_id.':'.$row['block_id']] ?? null);
+                    $blockKey = $p->user_id.':'.$row['block_id'];
+                    $timingCells = $this->timingCells($timing[$blockKey] ?? null);
+                    $hintHelpCells = $this->hintHelpCells($hintHelp[$blockKey] ?? null);
 
                     fputcsv($handle, array_map([$this, 'csvCell'], [
                         $p->user_id,
                         $p->user?->name ?? '',
                         $p->user?->email ?? '',
-                        $p->user?->classroom_id ?? '',
+                        $p->user ? $p->user->classrooms->pluck('id')->implode(';') : '',
                         $p->lesson_id,
                         $row['block_id'],
                         $row['step_id'],
@@ -441,6 +458,7 @@ class UserProgressController extends Controller
                         $row['open_text'],
                         $row['is_correct'] === null ? '' : ($row['is_correct'] ? 'ano' : 'ne'),
                         ...$timingCells,
+                        ...$hintHelpCells,
                     ]), "\t");
                 }
             }
