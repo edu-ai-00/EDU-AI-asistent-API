@@ -253,7 +253,9 @@ class AuthController extends Controller
             }
         }
 
-        $issued = SessionTokens::reissue($user, $shared, $sessionStart, $name);
+        // Push devices registered by this session follow it to the new token
+        // before the old one goes (its delete cascades to push_devices).
+        $issued = SessionTokens::reissue($user, $shared, $sessionStart, $name, (int) $current->getKey());
         $current->delete();
 
         return response()->json([

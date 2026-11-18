@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\PracticeReviewLog;
+use App\Notifications\NotificationProducers;
+use App\Notifications\NotificationTargetActions;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -92,6 +94,8 @@ class PracticeReviewLogController extends Controller
                 'created_at' => $log->created_at->toIso8601String(),
             ];
         }
+
+        NotificationProducers::action($userId, NotificationTargetActions::PRACTICE_REVIEWED);
 
         return response()->json([
             'data' => $results,

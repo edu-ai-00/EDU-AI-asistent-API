@@ -24,7 +24,10 @@ class ChatMessageController extends Controller
             ->where('user_id', $request->user()->id)
             ->firstOrFail();
 
-        $query = $session->messages()->orderBy('created_at', 'asc');
+        // A question and its answer share a `created_at` — timestamps are
+        // stored to the whole second — so `id` has to break the tie or the
+        // transcript comes back shuffled (BR-9M9BKT).
+        $query = $session->messages()->orderBy('created_at', 'asc')->orderBy('id', 'asc');
 
         if ($request->filled('since')) {
             $query->where('updated_at', '>', $request->input('since'));
@@ -177,6 +180,7 @@ class ChatMessageController extends Controller
             $history = $session->messages()
                 ->where('id', '<', $assistantMessage->id)
                 ->orderBy('created_at', 'asc')
+                ->orderBy('id', 'asc')
                 ->get()
                 ->map(fn (ChatMessage $m) => [
                     'role' => $m->role,
@@ -237,7 +241,7 @@ class ChatMessageController extends Controller
             $query->where('updated_at', '>', $request->input('since'));
         }
 
-        $messages = $query->orderBy('created_at', 'asc')->get();
+        $messages = $query->orderBy('created_at', 'asc')->orderBy('id', 'asc')->get();
 
         return response()->json([
             'data' => $messages->map(fn (ChatMessage $m) => [

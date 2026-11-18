@@ -59,6 +59,9 @@ return [
     // 'quiz-feedback' so it is editable from the admin without a deploy
     // (QuizFeedbackService::DEFAULT_PROMPT is the code fallback).
     'feedback_model' => env('AI_FEEDBACK_MODEL'),
-    'feedback_max_tokens' => (int) env('AI_FEEDBACK_MAX_TOKENS', 500),
+    // Far more than 3–5 sentences need: a reasoning model (prod runs one)
+    // spends its thinking out of the same budget, and at 500 that left the
+    // student half a sentence (BR-STUAH3). Only the tokens used are billed.
+    'feedback_max_tokens' => (int) env('AI_FEEDBACK_MAX_TOKENS', 2000),
     'feedback_timeout' => (int) env('AI_FEEDBACK_TIMEOUT', 25),
 ];

@@ -147,4 +147,37 @@ class QuestionnaireAnswerExtractionTest extends TestCase
         $this->assertSame('-129 | 117', $rows[0]['selected_option_texts']);
         $this->assertNull($rows[0]['is_correct']);
     }
+
+    /**
+     * BR-PW5EQK: the app saves an answer typed or picked but not yet checked,
+     * flagged isAnswered false, so it survives leaving the lesson. That draft
+     * is not an answer and stays out of the export.
+     */
+    public function test_extract_rows_skips_unchecked_drafts(): void
+    {
+        $key = $this->call('buildAnswerKeyForCourse', [$this->courseData()]);
+
+        $progress = (new UserProgress())->forceFill([
+            'progress_data' => [
+                'step_progress' => [
+                    'GPF-vstupni-test-v3_01' => [
+                        'stepAnswers' => [
+                            's2' => ['selectedOptionId' => 'opt_1', 'isAnswered' => false],
+                        ],
+                    ],
+                    'open_block' => [
+                        'stepAnswers' => [
+                            's2' => ['textAnswer' => 'Hotovo.', 'isAnswered' => true],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $rows = $this->call('extractAnswerRows', [$progress, $key]);
+
+        $this->assertCount(1, $rows);
+        $this->assertSame('open_block', $rows[0]['block_id']);
+        $this->assertSame('Hotovo.', $rows[0]['open_text']);
+    }
 }

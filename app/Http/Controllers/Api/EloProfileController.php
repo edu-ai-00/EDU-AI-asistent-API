@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\UserEloProfile;
+use App\Notifications\NotificationProducers;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -41,12 +42,23 @@ class EloProfileController extends Controller
             'profil_pocet.*' => 'nullable|integer',
         ]);
 
+        $previous = UserEloProfile::forUser($request->user()->id)->first();
+
         $profile = UserEloProfile::updateOrCreate(
             ['user_id' => $request->user()->id],
             [
                 'profil_elo' => $validated['profil_elo'] ?? null,
                 'profil_pocet' => $validated['profil_pocet'] ?? null,
             ]
+        );
+
+        // A GPF dimension crossing into mastery → topic.mastered.
+        NotificationProducers::eloProfileUpdated(
+            $request->user(),
+            $previous?->profil_elo,
+            $previous?->profil_pocet,
+            $profile->profil_elo,
+            $profile->profil_pocet,
         );
 
         return response()->json([

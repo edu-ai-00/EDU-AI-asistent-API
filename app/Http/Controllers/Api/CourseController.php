@@ -14,6 +14,7 @@ use App\Support\CourseBlocks;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
 class CourseController extends Controller
@@ -202,22 +203,78 @@ class CourseController extends Controller
         $request->validated();
         $courseData = $request->all();
 
-        // Transport-only flag — never part of the stored course JSON (BR-PKYUZC).
+        // Transport-only flags — never part of the stored course JSON
+        // (BR-PKYUZC, BR-JUWYK2).
         $autoVersion = $request->boolean('auto_version');
-        unset($courseData['auto_version']);
+        $baseVersion = $request->filled('base_version') ? (int) $request->input('base_version') : null;
+        unset($courseData['auto_version'], $courseData['base_version']);
 
         // Each block is stored once, however many times the payload lists it
         // (BR-XU4Y5K) — R2, the `data` backup and every export read this copy.
         $courseData = CourseBlocks::unique($courseData);
 
-        // Check if course already exists
-        $existingCourse = Course::where('course_id', $courseData['course_id'])->first();
+        try {
+            // One transaction under a row lock, so two saves from the same
+            // base cannot both pass the version check and write the same
+            // next version (BR-JUWYK2).
+            return DB::transaction(fn () => $this->storeUpload(
+                $request,
+                $courseData,
+                $autoVersion,
+                $baseVersion,
+            ));
+        } catch (QueryException $e) {
+            if ($e->errorInfo[1] == 7 || str_contains($e->getMessage(), '23505')) {
+                // Unique constraint violation — most likely duplicate pin
+                $pin = $this->storageService->extractMetadata($courseData)['pin'];
+                return response()->json([
+                    'message' => $pin
+                        ? "Kurz s PINem {$pin} již existuje. Zvolte prosím jiný PIN."
+                        : 'Kurz s tímto identifikátorem již existuje.',
+                ], 422);
+            }
+            throw $e;
+        }
+    }
+
+    /**
+     * The body of upload(), run inside its transaction.
+     */
+    private function storeUpload(
+        UploadCourseRequest $request,
+        array $courseData,
+        bool $autoVersion,
+        ?int $baseVersion,
+    ): JsonResponse {
+        // Check if course already exists. NO KEY UPDATE locks out a parallel
+        // save of this course but not pupils' enrolment rows, whose foreign
+        // keys only need a key-share lock on it.
+        $existingCourse = Course::where('course_id', $courseData['course_id'])
+            ->lock('for no key update')
+            ->first();
 
         if ($existingCourse) {
             if ($autoVersion) {
-                // The course editor saves whatever it has in memory; the server
-                // owns the version counter so a stale client copy can never
-                // deadlock saving. Manual JSON imports keep the strict check.
+                // The editor saves the whole course, so a copy loaded before
+                // someone else saved would silently overwrite their work
+                // (BR-JUWYK2). It sends the version it was loaded from. Every
+                // change to the course row bumps the version (Course::boot),
+                // so this also catches a "Změnit stav" from the course list.
+                if ($baseVersion !== null && $baseVersion !== $existingCourse->version) {
+                    return response()->json([
+                        'message' => 'Kurz mezitím upravil někdo jiný. Uložením byste jeho změny přepsali.',
+                        'edit_conflict' => [
+                            'base_version' => $baseVersion,
+                            'current_version' => $existingCourse->version,
+                            'current_status' => $existingCourse->status,
+                            'updated_at' => $existingCourse->updated_at?->toIso8601String(),
+                        ],
+                    ], 409);
+                }
+
+                // The server owns the version counter so a stale client copy
+                // can never deadlock saving (BR-PKYUZC). Manual JSON imports
+                // keep the strict check.
                 $courseData['version'] = $existingCourse->version + 1;
             } elseif ($courseData['version'] <= $existingCourse->version) {
                 return response()->json([
@@ -266,23 +323,12 @@ class CourseController extends Controller
             $courseAttrs['created_by'] = $user->id;
         }
 
-        try {
-            $course = Course::updateOrCreate(
-                ['course_id' => $courseData['course_id']],
-                $courseAttrs,
-            );
-        } catch (QueryException $e) {
-            if ($e->errorInfo[1] == 7 || str_contains($e->getMessage(), '23505')) {
-                // Unique constraint violation — most likely duplicate pin
-                $pin = $courseAttrs['pin'] ?? null;
-                return response()->json([
-                    'message' => $pin
-                        ? "Kurz s PINem {$pin} již existuje. Zvolte prosím jiný PIN."
-                        : 'Kurz s tímto identifikátorem již existuje.',
-                ], 422);
-            }
-            throw $e;
-        }
+        // A unique-constraint failure here is answered by upload(), after the
+        // transaction has rolled back.
+        $course = Course::updateOrCreate(
+            ['course_id' => $courseData['course_id']],
+            $courseAttrs,
+        );
 
         $this->logPublication($course, $existingCourse?->status);
 
@@ -448,6 +494,10 @@ class CourseController extends Controller
             'data' => [
                 'course_id' => $course->course_id,
                 'version' => $course->version,
+                // "Změnit stav" in the course list writes the status to the
+                // database only, so the stored JSON can lag behind it. The
+                // editor opens with this one (BR-JUWYK2).
+                'status' => $course->status,
                 'download_url' => $url,
                 'expires_at' => $expiresAt->toIso8601String(),
                 'file_size' => $course->file_size,

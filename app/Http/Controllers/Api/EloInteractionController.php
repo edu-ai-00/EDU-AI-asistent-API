@@ -302,6 +302,11 @@ class EloInteractionController extends Controller
      * the export reflects the full lesson traversal. Timing columns prefer
      * the dedicated columns on `elo_interactions` (populated by the
      * client + backfill) and fall back to `progress_data` when needed.
+     * A block confirmed under a second after it opened — every quiz answer
+     * logged before BR-PTSQDD — opens where the student's previous block
+     * ended instead (BR-6NK9AX, see openFromPreviousBlock). Only the export
+     * changes; the stored rows, and the gaming reference read from them,
+     * keep their values.
      *
      * The trailing hint / help / assistant columns report every time the
      * student opened assistance on that block (BR-SPYYKR), so a fast answer
@@ -396,43 +401,37 @@ class EloInteractionController extends Controller
             'format' => 'csv',
         ]);
 
-        return response()->streamDownload(function () use (
-            $interactions, $lessonTraversal, $hintHelp,
-            $sourceLabels, $headers, $userMap, $courseId
-        ) {
-            $handle = fopen('php://output', 'w');
+        // Each row is [cells before the timing, timing, cells after it]. The
+        // timing is resolved for every row before any is written: a block
+        // without a time of its own opens where the student's previous block
+        // ended, and that block may come from either pass (BR-6NK9AX).
+        $rows = [];
 
-            // BOM for Excel UTF-8 compatibility
-            fwrite($handle, "\xEF\xBB\xBF");
+        // ── Pass 1: one row per ELO interaction (lesson + quiz). ──
+        // Track which (user, block, lesson-source) pairs we've already
+        // collected so Pass 2 doesn't duplicate them.
+        $emittedLessonKeys = [];
 
-            // Write header with tab separator
-            fputcsv($handle, $headers, "\t");
+        foreach ($interactions as $i) {
+            $tsKey = $i->user_id.':'.$i->block_id;
+            $progressTs = $lessonTraversal[$tsKey] ?? null;
 
-            // ── Pass 1: emit one row per ELO interaction (lesson + quiz). ──
-            // Track which (user, block, lesson-source) pairs we've already
-            // written so Pass 2 doesn't duplicate them.
-            $emittedLessonKeys = [];
+            // Prefer the dedicated columns on elo_interactions, fall back
+            // to the progress_data block_timestamps. created_at remains
+            // the final fallback for confirmed_at.
+            $openedAt = $i->opened_at
+                ?? ($progressTs && isset($progressTs['opened_at'])
+                    ? \Carbon\Carbon::parse($progressTs['opened_at'])
+                    : null);
 
-            foreach ($interactions as $i) {
-                $tsKey = $i->user_id.':'.$i->block_id;
-                $progressTs = $lessonTraversal[$tsKey] ?? null;
+            $confirmedAt = $i->confirmed_at
+                ?? ($progressTs && isset($progressTs['confirmed_at'])
+                    ? \Carbon\Carbon::parse($progressTs['confirmed_at'])
+                    : $i->created_at);
 
-                // Prefer the dedicated columns on elo_interactions, fall back
-                // to the progress_data block_timestamps. created_at remains
-                // the final fallback for confirmed_at.
-                $openedAt = $i->opened_at
-                    ?? ($progressTs && isset($progressTs['opened_at'])
-                        ? \Carbon\Carbon::parse($progressTs['opened_at'])
-                        : null);
-
-                $confirmedAt = $i->confirmed_at
-                    ?? ($progressTs && isset($progressTs['confirmed_at'])
-                        ? \Carbon\Carbon::parse($progressTs['confirmed_at'])
-                        : $i->created_at);
-
-                $duration = $this->formatDurationCell($i->duration_ms, $openedAt, $confirmedAt);
-
-                fputcsv($handle, [
+            $rows[] = [
+                'user_id' => $i->user_id,
+                'before' => [
                     $i->user_id,
                     $i->user ? $i->user->classrooms->pluck('id')->implode(';') : '',
                     $i->block_id,
@@ -442,43 +441,42 @@ class EloInteractionController extends Controller
                     is_array($i->updated_indices) ? implode(', ', $i->updated_indices) : '',
                     is_array($i->profil_elo_snapshot) ? implode(', ', $i->profil_elo_snapshot) : '',
                     is_array($i->elo_vector_snapshot) ? implode(', ', $i->elo_vector_snapshot) : '',
-                    ($confirmedAt ?? $i->created_at)->format('j.n.Y'),
-                    $openedAt ? $openedAt->format('H:i:s') : '',
-                    $confirmedAt ? $confirmedAt->format('H:i:s') : '',
-                    $duration,
+                ],
+                'timing' => ['opened' => $openedAt, 'confirmed' => $confirmedAt, 'duration_ms' => $i->duration_ms],
+                'after' => [
                     ...$this->hintHelpCells($hintHelp[$tsKey] ?? null),
                     $i->elo_config_version ?? '',
-                ], "\t");
+                ],
+            ];
 
-                if (($i->source ?? 'lesson') === 'lesson') {
-                    $emittedLessonKeys[$tsKey] = true;
-                }
+            if (($i->source ?? 'lesson') === 'lesson') {
+                $emittedLessonKeys[$tsKey] = true;
+            }
+        }
+
+        // ── Pass 2: traversal rows for lesson blocks that had no ELO
+        // interaction (display / content blocks). These give the full
+        // lesson traversal picture, with timing but no score / ELO. ──
+        foreach ($lessonTraversal as $key => $ts) {
+            if (isset($emittedLessonKeys[$key])) {
+                continue;
             }
 
-            // ── Pass 2: emit traversal rows for lesson blocks that had no
-            // ELO interaction (display / content blocks). These give the
-            // full lesson traversal picture, with timing but no score / ELO. ──
-            foreach ($lessonTraversal as $key => $ts) {
-                if (isset($emittedLessonKeys[$key])) {
-                    continue;
-                }
+            [$userId, $blockId] = explode(':', $key, 2);
+            $userId = (int) $userId;
 
-                [$userId, $blockId] = explode(':', $key, 2);
-                $userId = (int) $userId;
+            $openedAt = isset($ts['opened_at']) ? \Carbon\Carbon::parse($ts['opened_at']) : null;
+            $confirmedAt = isset($ts['confirmed_at']) ? \Carbon\Carbon::parse($ts['confirmed_at']) : null;
 
-                $openedAt = isset($ts['opened_at']) ? \Carbon\Carbon::parse($ts['opened_at']) : null;
-                $confirmedAt = isset($ts['confirmed_at']) ? \Carbon\Carbon::parse($ts['confirmed_at']) : null;
+            // Skip rows that have no usable timing at all — they would be
+            // noise without any answer / score data attached.
+            if ($openedAt === null && $confirmedAt === null) {
+                continue;
+            }
 
-                // Skip rows that have no usable timing at all — they would be
-                // noise without any answer / score data attached.
-                if ($openedAt === null && $confirmedAt === null) {
-                    continue;
-                }
-
-                $duration = $this->formatDurationCell(null, $openedAt, $confirmedAt);
-                $dayAnchor = $confirmedAt ?? $openedAt;
-
-                fputcsv($handle, [
+            $rows[] = [
+                'user_id' => $userId,
+                'before' => [
                     $userId,
                     isset($userMap[$userId]) ? $userMap[$userId]->classrooms->pluck('id')->implode(';') : '',
                     $blockId,
@@ -488,12 +486,31 @@ class EloInteractionController extends Controller
                     '', // no updated_indices
                     '', // no profil_elo_snapshot
                     '', // no elo_vector_snapshot
-                    $dayAnchor ? $dayAnchor->format('j.n.Y') : '',
-                    $openedAt ? $openedAt->format('H:i:s') : '',
-                    $confirmedAt ? $confirmedAt->format('H:i:s') : '',
-                    $duration,
+                ],
+                'timing' => ['opened' => $openedAt, 'confirmed' => $confirmedAt, 'duration_ms' => null],
+                'after' => [
                     ...$this->hintHelpCells($hintHelp[$key] ?? null),
                     '', // no ELO interaction → no config version
+                ],
+            ];
+        }
+
+        $rows = $this->openFromPreviousBlock($rows);
+
+        return response()->streamDownload(function () use ($rows, $headers) {
+            $handle = fopen('php://output', 'w');
+
+            // BOM for Excel UTF-8 compatibility
+            fwrite($handle, "\xEF\xBB\xBF");
+
+            // Write header with tab separator
+            fputcsv($handle, $headers, "\t");
+
+            foreach ($rows as $row) {
+                fputcsv($handle, [
+                    ...$row['before'],
+                    ...$this->timingCells($row['timing']),
+                    ...$row['after'],
                 ], "\t");
             }
 

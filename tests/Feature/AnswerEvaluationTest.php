@@ -8,6 +8,7 @@ use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -647,6 +648,125 @@ class AnswerEvaluationTest extends TestCase
         ])->assertStatus(422);
 
         Http::assertNothingSent();
+    }
+
+    // ── Timing (BR-2RKV3Z) ──────────────────────────────────────────────────
+
+    public function test_the_response_carries_a_timing_breakdown(): void
+    {
+        Http::fake([
+            'https://openrouter.test/*' => Http::response([
+                'choices' => [['message' => ['content' => $this->modelJson()]]],
+                'usage' => ['prompt_tokens' => 820, 'completion_tokens' => 240],
+            ], 200),
+        ]);
+        $this->actAsStudent();
+
+        $response = $this->postJson('/api/answers/evaluate', [
+            'question' => 'Kolik je 1/2 + 1/4?',
+            'solution' => '3/4',
+            'student_answer' => 'tři čtvrtiny',
+        ])->assertOk();
+
+        $timing = $response->json('data.timing_ms');
+
+        $this->assertIsInt($timing['total']);
+        $this->assertIsInt($timing['request']);
+        $this->assertSame(1, $timing['rounds']);
+        $this->assertCount(1, $timing['rounds_ms']);
+        // No photo, so nothing was fetched from R2 before the model ran.
+        $this->assertSame(0, $timing['photo']);
+        // Output length is what generation time is actually spent on, so the
+        // counters have to survive the trip.
+        $this->assertSame(820, $timing['prompt_tokens']);
+        $this->assertSame(240, $timing['completion_tokens']);
+    }
+
+    public function test_a_leak_retry_is_reported_as_two_model_rounds(): void
+    {
+        // The second round is the single biggest thing this endpoint can add to
+        // a student's wait — it is a whole completion more — so the breakdown
+        // has to say when it happened rather than folding it into one total.
+        $this->fakeModelSequence([
+            $this->modelJson(['improvements' => 'Chybí ti fotosyntéza a chloroplast.']),
+            $this->modelJson(['improvements' => 'Zamysli se nad tím, kde v rostlině vzniká energie.']),
+        ]);
+        $this->actAsStudent();
+
+        $response = $this->postJson('/api/answers/evaluate', [
+            'question' => 'Jak rostlina získává energii?',
+            'correct_answer' => 'fotosyntéza chloroplast',
+            'student_answer' => 'Nějak ze slunce.',
+        ])->assertOk();
+
+        $this->assertSame(2, $response->json('data.timing_ms.rounds'));
+        $this->assertCount(2, $response->json('data.timing_ms.rounds_ms'));
+    }
+
+    public function test_the_exact_match_shortcut_reports_no_model_round(): void
+    {
+        Http::fake();
+        $this->actAsStudent();
+
+        $response = $this->postJson('/api/answers/evaluate', [
+            'question' => 'Jak se jmenuje proces, kterým rostliny získávají energii?',
+            'correct_answer' => 'fotosyntéza',
+            'student_answer' => 'fotosyntéza',
+        ])->assertOk();
+
+        $this->assertSame(0, $response->json('data.timing_ms.rounds'));
+        $this->assertSame([], $response->json('data.timing_ms.rounds_ms'));
+    }
+
+    public function test_the_timing_is_logged_even_when_the_evaluation_gives_up(): void
+    {
+        Log::spy();
+        Http::fake(['https://openrouter.test/*' => Http::response('nope', 500)]);
+        $this->actAsStudent();
+
+        $this->postJson('/api/answers/evaluate', [
+            'question' => 'Kolik je 1/2 + 1/4?',
+            'solution' => '3/4',
+            'student_answer' => 'tři čtvrtiny',
+        ])->assertStatus(503);
+
+        // A failed round is the expensive one — it can spend the whole timeout
+        // budget — and nothing else records how long the student waited for it.
+        Log::shouldHaveReceived('info')
+            ->withArgs(function (string $message, array $context) {
+                return $message === 'Answer evaluation timing'
+                    && $context['outcome'] === 'unavailable'
+                    && $context['rounds'] === 1
+                    && is_int($context['request']);
+            })
+            ->once();
+    }
+
+    public function test_a_photo_is_sent_as_the_type_its_handle_declares(): void
+    {
+        Storage::fake('s3');
+        $this->fakeModelResponse($this->modelJson());
+        $this->actAsStudent();
+
+        $name = $this->postJson('/api/answers/photo', [
+            'photo' => UploadedFile::fake()->image('reseni.png'),
+        ])->assertCreated()->json('data.photo_name');
+
+        $this->postJson('/api/answers/evaluate', [
+            'question' => 'Vypočítej a vyfoť postup.',
+            'photo_name' => $name,
+        ])->assertOk();
+
+        Http::assertSent(function ($request) {
+            $content = collect($request['messages'])->firstWhere('role', 'user')['content'];
+            $image = collect($content)->firstWhere('type', 'image_url');
+
+            // Derived from the extension the upload stored, not from a second
+            // round trip to R2 (BR-2RKV3Z).
+            $this->assertStringStartsWith('data:image/png;base64,', $image['image_url']['url']);
+
+            return true;
+        });
     }
 
     // ── Failure handling ────────────────────────────────────────────────────

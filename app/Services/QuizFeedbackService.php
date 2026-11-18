@@ -90,12 +90,37 @@ class QuizFeedbackService
 
             $text = trim((string) $response->json('choices.0.message.content', ''));
 
+            // Out of budget mid-reply: the popup would show the comment
+            // breaking off mid-word (BR-STUAH3). Keep what was finished.
+            if ($text !== '' && $response->json('choices.0.finish_reason') === 'length') {
+                Log::warning('Quiz feedback comment hit the token limit', [
+                    'usage' => $response->json('usage'),
+                ]);
+                $text = $this->wholeSentences($text);
+            }
+
             return $text === '' ? null : $text;
         } catch (\Throwable $e) {
             Log::warning('Quiz feedback comment threw', ['error' => $e->getMessage()]);
 
             return null;
         }
+    }
+
+    /**
+     * A cut-off reply up to the end of its last finished sentence, or '' when
+     * not even the first one was finished.
+     */
+    private function wholeSentences(string $text): string
+    {
+        // A terminator, any closing quote or bracket, then whitespace or end.
+        if (! preg_match_all('/[.!?…]["\'“”«»)]*(?=\s|$)/u', $text, $ends, PREG_OFFSET_CAPTURE)) {
+            return '';
+        }
+
+        [$mark, $offset] = end($ends[0]);
+
+        return trim(substr($text, 0, $offset + strlen($mark)));
     }
 
     private function prompt(): string

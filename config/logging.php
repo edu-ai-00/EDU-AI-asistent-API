@@ -123,6 +123,16 @@ return [
             'handler' => NullHandler::class,
         ],
 
+        // Notification incidents (bad event data, stripped placeholders, push
+        // failures). A stack over the default channel, so the lines land
+        // wherever the rest of the app logs (stderr + Sentry when
+        // deployed) and can be pointed elsewhere without touching code.
+        'notifications' => [
+            'driver' => 'stack',
+            'channels' => [env('LOG_CHANNEL', 'stack')],
+            'ignore_exceptions' => false,
+        ],
+
         'emergency' => [
             'path' => storage_path('logs/laravel.log'),
         ],

@@ -20,9 +20,12 @@ class WorkTimeReport
 
     /**
      * @param  array<string, int[]>  $signalsByCourse  course_id => epoch-second signal times
-     * @return array{total_seconds: int, by_course: array<string,int>, by_day: array<string,int>, sessions: array<int, array{course_id: string, start: string, end: string, duration: int}>}
+     * @param  array<string, array<int, array{at: int, platform: ?string, type: ?string}>>  $devicesByCourse
+     *         course_id => the signals that know which device they came from
+     *         (heartbeats); each session lists the devices seen inside it
+     * @return array{total_seconds: int, by_course: array<string,int>, by_day: array<string,int>, sessions: array<int, array{course_id: string, start: string, end: string, duration: int, devices: array<int, array{platform: ?string, type: ?string}>}>}
      */
-    public function aggregate(array $signalsByCourse, string $timezone): array
+    public function aggregate(array $signalsByCourse, string $timezone, array $devicesByCourse = []): array
     {
         $totalSeconds = 0;
         $byCourse = [];
@@ -30,6 +33,10 @@ class WorkTimeReport
         $sessions = [];
 
         foreach ($signalsByCourse as $courseId => $timestamps) {
+            $devices = $devicesByCourse[$courseId] ?? [];
+            usort($devices, fn ($a, $b) => $a['at'] <=> $b['at']);
+            $cursor = 0;
+
             foreach ($this->sessionizer->sessionize($timestamps) as $session) {
                 $duration = $session['duration'];
                 $start = Carbon::createFromTimestamp($session['start'], $timezone);
@@ -45,6 +52,7 @@ class WorkTimeReport
                     'start' => $start->toIso8601String(),
                     'end' => $end->toIso8601String(),
                     'duration' => $duration,
+                    'devices' => $this->devicesWithin($devices, $cursor, $session['start'], $session['end']),
                 ];
             }
         }
@@ -59,5 +67,30 @@ class WorkTimeReport
             'by_day' => $byDay,
             'sessions' => $sessions,
         ];
+    }
+
+    /**
+     * Distinct devices among the device signals inside [start, end], in the
+     * order they were first used (BR-Y2TJ74). Sessions arrive in chronological
+     * order, so [cursor] only moves forward and each signal is read once.
+     *
+     * @param  array<int, array{at: int, platform: ?string, type: ?string}>  $devices  sorted by `at`
+     * @return array<int, array{platform: ?string, type: ?string}>
+     */
+    private function devicesWithin(array $devices, int &$cursor, int $start, int $end): array
+    {
+        $count = count($devices);
+        while ($cursor < $count && $devices[$cursor]['at'] < $start) {
+            $cursor++;
+        }
+
+        $found = [];
+        while ($cursor < $count && $devices[$cursor]['at'] <= $end) {
+            $device = ['platform' => $devices[$cursor]['platform'], 'type' => $devices[$cursor]['type']];
+            $found[$device['platform'].'|'.$device['type']] ??= $device;
+            $cursor++;
+        }
+
+        return array_values($found);
     }
 }

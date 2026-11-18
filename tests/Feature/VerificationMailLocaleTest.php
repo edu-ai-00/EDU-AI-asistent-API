@@ -31,13 +31,13 @@ class VerificationMailLocaleTest extends TestCase
     public static function localeProvider(): array
     {
         return [
-            'czech' => ['cs', 'Váš ověřovací kód pro EduAI'],
-            'slovak' => ['sk', 'Váš overovací kód pre EduAI'],
-            'english' => ['en', 'Your EduAI verification code'],
+            'czech' => ['cs', 'Váš ověřovací kód pro EDU-AI'],
+            'slovak' => ['sk', 'Váš overovací kód pre EDU-AI'],
+            'english' => ['en', 'Your EDU-AI verification code'],
             // Browser-style header with region and quality values.
-            'slovak with region' => ['sk-SK,sk;q=0.9,en;q=0.8', 'Váš overovací kód pre EduAI'],
+            'slovak with region' => ['sk-SK,sk;q=0.9,en;q=0.8', 'Váš overovací kód pre EDU-AI'],
             // A language we ship no translations for falls back to Czech.
-            'unsupported' => ['de', 'Váš ověřovací kód pro EduAI'],
+            'unsupported' => ['de', 'Váš ověřovací kód pro EDU-AI'],
         ];
     }
 

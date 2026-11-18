@@ -30,6 +30,61 @@ class WorkTimeTest extends TestCase
         $this->assertSame(2, WorkHeartbeat::where('user_id', $user->id)->count());
     }
 
+    public function test_heartbeat_ingest_records_the_sending_device(): void
+    {
+        $user = User::factory()->create();
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/work/heartbeats', [
+            'platform' => 'ios',
+            'device_type' => 'tablet',
+            'heartbeats' => [
+                ['client_uuid' => '55555555-5555-4555-8555-555555555555', 'course_id' => 'math', 'occurred_at' => '2026-07-09T10:00:00+02:00'],
+            ],
+        ])->assertOk();
+
+        $hb = WorkHeartbeat::where('user_id', $user->id)->firstOrFail();
+        $this->assertSame('ios', $hb->platform);
+        $this->assertSame('tablet', $hb->device_type);
+    }
+
+    public function test_heartbeats_from_older_app_builds_have_no_device(): void
+    {
+        $user = User::factory()->create();
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/work/heartbeats', ['heartbeats' => [
+            ['client_uuid' => '66666666-6666-4666-8666-666666666666', 'course_id' => 'math', 'occurred_at' => '2026-07-09T10:00:00+02:00'],
+        ]])->assertOk();
+
+        $hb = WorkHeartbeat::where('user_id', $user->id)->firstOrFail();
+        $this->assertNull($hb->platform);
+        $this->assertNull($hb->device_type);
+    }
+
+    public function test_admin_work_time_sessions_show_the_device(): void
+    {
+        $student = User::factory()->create(['role' => 'student']);
+        $admin = User::factory()->create(['role' => 'admin']);
+
+        WorkHeartbeat::create([
+            'user_id' => $student->id,
+            'client_uuid' => '77777777-7777-4777-8777-777777777777',
+            'course_id' => 'math',
+            'occurred_at' => '2026-07-09T10:00:00+02:00',
+            'platform' => 'web',
+            'device_type' => 'desktop',
+        ]);
+
+        Sanctum::actingAs($admin);
+
+        $this->getJson("/api/admin/users/{$student->id}/work-time")
+            ->assertOk()
+            ->assertJsonPath('data.sessions.0.devices', [
+                ['platform' => 'web', 'type' => 'desktop'],
+            ]);
+    }
+
     public function test_future_timestamps_are_clamped_to_now(): void
     {
         $user = User::factory()->create();

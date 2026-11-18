@@ -31,3 +31,47 @@ Schedule::command('elo:recalibrate')
 // AI Course Assistant sessions expire in minutes; sweep their R2 uploads often.
 // (Sessions also prune opportunistically when a new one is issued.)
 Schedule::command('generation:prune')->hourly();
+
+// Notifications (NOTIF-2/6/7/10, spec §6.2). Times are the default
+// notification timezone's (Europe/Prague); each command works out the
+// student's own local day itself. withoutOverlapping/onOneServer take their
+// locks from the cache store (database by default — it supports locks). The
+// overlap locks expire after a few periods (minutes, not the default day), so
+// a run that crashed cannot silence a frequent command for 24 hours.
+$notificationsTimezone = (string) config('notifications.default_timezone', 'Europe/Prague');
+
+Schedule::command('notifications:learning-reminders')
+    ->everyFiveMinutes()
+    ->timezone($notificationsTimezone)
+    ->withoutOverlapping(10)
+    ->onOneServer();
+
+Schedule::command('notifications:activation')
+    ->dailyAt('15:30')
+    ->timezone($notificationsTimezone)
+    ->withoutOverlapping(120)
+    ->onOneServer();
+
+Schedule::command('notifications:inactivity')
+    ->dailyAt('16:00')
+    ->timezone($notificationsTimezone)
+    ->withoutOverlapping(120)
+    ->onOneServer();
+
+Schedule::command('notifications:broadcast-deadlines')
+    ->everyFifteenMinutes()
+    ->timezone($notificationsTimezone)
+    ->withoutOverlapping(30)
+    ->onOneServer();
+
+Schedule::command('notifications:retry-stuck')
+    ->everyTenMinutes()
+    ->timezone($notificationsTimezone)
+    ->withoutOverlapping(20)
+    ->onOneServer();
+
+Schedule::command('notifications:queue-health')
+    ->everyFiveMinutes()
+    ->timezone($notificationsTimezone)
+    ->withoutOverlapping(10)
+    ->onOneServer();

@@ -123,7 +123,7 @@ class TeamInviteTest extends TestCase
             $rendered = $mail->render();
 
             return $mail->locale === 'cs'
-                && str_contains($rendered, 'Vítejte v administraci EduAI')
+                && str_contains($rendered, 'Vítejte v administraci EDU-AI')
                 && str_contains($rendered, 'rolí učitel');
         });
     }

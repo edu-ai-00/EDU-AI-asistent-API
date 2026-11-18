@@ -30,5 +30,8 @@ class DatabaseSeeder extends Seeder
 
         // Seed the avatar cosmetics catalog
         $this->call(AvatarItemSeeder::class);
+
+        // Notification types and their system rules
+        $this->call(NotificationCatalogSeeder::class);
     }
 }

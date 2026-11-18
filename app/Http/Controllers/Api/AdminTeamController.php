@@ -11,6 +11,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Validation\Rule;
 
 /**
  * Admin and teacher accounts and their invite lifecycle: invited → active,
@@ -30,7 +31,7 @@ class AdminTeamController extends Controller
     public function index(): JsonResponse
     {
         $users = User::whereIn('role', ['admin', 'teacher'])
-            ->with('schools:schools.id,name')
+            ->with('schools:schools.id,name', 'teachingClassrooms:classrooms.id')
             ->orderBy('role')
             ->orderBy('name')
             ->get();
@@ -47,9 +48,10 @@ class AdminTeamController extends Controller
      * make a second account: that student account is promoted in place and
      * keeps its id and everything attached to it (48247f8). The audit row
      * records that it happened (`existing_account`). An admin invited as a
-     * teacher is not refused either — see fileAdminAsTeacher() (BR-A7KEZ6).
-     * Anyone else already on the team is refused — for them the answer is a
-     * resend, not a new invite.
+     * teacher is not refused either — see fileAdminAsTeacher() (BR-A7KEZ6) —
+     * and neither is a teacher invited as an admin: see promoteTeacherToAdmin()
+     * (BR-98XQ58). Anyone invited again in the role they already have is
+     * refused — for them the answer is a resend, not a new invite.
      *
      * POST /api/admin/team
      */
@@ -71,9 +73,15 @@ class AdminTeamController extends Controller
             return $this->fileAdminAsTeacher($existing, $schoolIds);
         }
 
+        if ($existing?->isTeacher() && $validated['role'] === 'admin') {
+            return $this->promoteTeacherToAdmin($existing);
+        }
+
         if ($existing && in_array($existing->role, ['admin', 'teacher'])) {
+            // The admin panel rewords this one per screen, keyed on the text
+            // below — keep the two in step (BR-FJ8FR6).
             return response()->json([
-                'message' => 'This user is already a team member.',
+                'message' => 'Tento uživatel už je členem týmu.',
             ], 422);
         }
 
@@ -115,7 +123,7 @@ class AdminTeamController extends Controller
         $this->sendInvite($user);
 
         return response()->json([
-            'data' => $this->format($user->load('schools:schools.id,name')),
+            'data' => $this->format($user->load('schools:schools.id,name', 'teachingClassrooms:classrooms.id')),
         ], 201);
     }
 
@@ -141,7 +149,48 @@ class AdminTeamController extends Controller
         }
 
         return response()->json([
-            'data' => $this->format($admin->load('schools:schools.id,name')),
+            'data' => $this->format($admin->load('schools:schools.id,name', 'teachingClassrooms:classrooms.id')),
+        ]);
+    }
+
+    /**
+     * A teacher invited as an admin (BR-98XQ58).
+     *
+     * Refusing it left the invite form with no way up from teacher, while a
+     * student's e-mail has always been promoted in place. So the account is
+     * kept — id, name, classes and schools — and only the role changes; the
+     * schools keep an admin who teaches on the Učitelé tab (BR-A7KEZ6).
+     *
+     * A teacher who already signs in gets no invite: opening one would start
+     * an expiry on an account that is in use, and the first sign-in after it
+     * ran out would be refused. One who never accepted theirs gets a fresh
+     * invite, now as an admin, exactly as a resend would.
+     */
+    private function promoteTeacherToAdmin(User $teacher): JsonResponse
+    {
+        $reinvite = in_array($teacher->teamStatus(), ['invited', 'expired'], true);
+
+        DB::transaction(function () use ($teacher, $reinvite) {
+            $teacher->update(['role' => 'admin']);
+            $this->audit->userUpdated($teacher);
+
+            if ($reinvite) {
+                $this->openInvite($teacher);
+                $this->audit->log('user.invited', $teacher, meta: [
+                    'role' => $teacher->role,
+                    'existing_account' => true,
+                    'school_ids' => [],
+                    'invite_expires_at' => $teacher->invite_expires_at->toIso8601String(),
+                ]);
+            }
+        });
+
+        if ($reinvite) {
+            $this->sendInvite($teacher);
+        }
+
+        return response()->json([
+            'data' => $this->format($teacher->load('schools:schools.id,name', 'teachingClassrooms:classrooms.id')),
         ]);
     }
 
@@ -157,7 +206,7 @@ class AdminTeamController extends Controller
 
         if (!in_array($user->teamStatus(), ['invited', 'expired'], true)) {
             return response()->json([
-                'message' => 'Only a pending or expired invite can be resent.',
+                'message' => 'Znovu poslat lze jen nepřijatou pozvánku nebo pozvánku, které vypršela platnost.',
             ], 422);
         }
 
@@ -171,7 +220,7 @@ class AdminTeamController extends Controller
         $this->sendInvite($user);
 
         return response()->json([
-            'data' => $this->format($user->load('schools:schools.id,name')),
+            'data' => $this->format($user->load('schools:schools.id,name', 'teachingClassrooms:classrooms.id')),
         ]);
     }
 
@@ -224,7 +273,7 @@ class AdminTeamController extends Controller
     }
 
     /**
-     * Update name or role of a team member.
+     * Update name, role, schools or taught classes of a team member.
      *
      * `student` is accepted as a target role: it is how someone leaves the team
      * without the account going anywhere, and it is the same write `destroy()`
@@ -245,6 +294,15 @@ class AdminTeamController extends Controller
             // Full replacement of the member's schools (BR-R84FVD).
             'school_ids' => 'sometimes|array',
             'school_ids.*' => 'integer|distinct|exists:schools,id',
+            // ...and of the classes they teach (BR-6W6R5Y), the same field
+            // and the same rule AdminUserController takes (BR-QKCBCT): only
+            // school classes have teachers, never a family's own class.
+            'teaching_classroom_ids' => 'sometimes|array',
+            'teaching_classroom_ids.*' => [
+                'integer',
+                'distinct',
+                Rule::exists('classrooms', 'id')->where('type', 'school'),
+            ],
         ]);
 
         if (isset($validated['email'])) {
@@ -256,24 +314,29 @@ class AdminTeamController extends Controller
             && $request->user()->id === $user->id
             && $validated['role'] !== $user->role) {
             return response()->json([
-                'message' => 'You cannot change your own role.',
+                'message' => 'Nemůžete změnit svou vlastní roli.',
             ], 422);
         }
 
         $schoolIds = $validated['school_ids'] ?? null;
-        unset($validated['school_ids']);
+        $teachingClassroomIds = $validated['teaching_classroom_ids'] ?? null;
+        unset($validated['school_ids'], $validated['teaching_classroom_ids']);
 
         $user->update($validated);
         $this->audit->userUpdated($user);
 
         // After the role write, so a demotion to student in the same save
-        // files nobody under a school.
+        // files nobody under a school and leaves nobody teaching a class.
         if ($schoolIds !== null && ($change = $user->syncSchools($schoolIds))) {
             $this->audit->log('user.schools_changed', $user, diff: ['school_ids' => $change]);
         }
 
+        if ($teachingClassroomIds !== null && ($change = $user->syncTeachingClassrooms($teachingClassroomIds))) {
+            $this->audit->log('user.teaching_classrooms_changed', $user, diff: ['classroom_ids' => $change]);
+        }
+
         return response()->json([
-            'data' => $this->format($user->load('schools:schools.id,name')),
+            'data' => $this->format($user->load('schools:schools.id,name', 'teachingClassrooms:classrooms.id')),
         ]);
     }
 
@@ -296,7 +359,7 @@ class AdminTeamController extends Controller
         // Prevent self-demotion
         if ($request->user()->id === $user->id) {
             return response()->json([
-                'message' => 'You cannot remove yourself from the team.',
+                'message' => 'Nemůžete odebrat z týmu svůj vlastní účet.',
             ], 422);
         }
 
@@ -315,7 +378,7 @@ class AdminTeamController extends Controller
         });
 
         return response()->json([
-            'message' => 'Team member removed successfully.',
+            'message' => 'Člen týmu byl odebrán.',
         ]);
     }
 
@@ -335,6 +398,10 @@ class AdminTeamController extends Controller
                 ->map(fn ($s) => ['id' => $s->id, 'name' => $s->name])
                 ->values()
                 ->all(),
+            // The classes they teach (BR-6W6R5Y) — the same classroom_teacher
+            // pivot "Upravit uživatele" has written since BR-QKCBCT, so the
+            // team dialog can show and change them too.
+            'teaching_classroom_ids' => $user->teachingClassrooms->pluck('id')->all(),
             'created_at' => $user->created_at->toIso8601String(),
         ];
     }
