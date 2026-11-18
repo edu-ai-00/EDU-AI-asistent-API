@@ -82,6 +82,7 @@ class User extends Authenticatable
             'invited_at' => 'datetime',
             'invite_expires_at' => 'datetime',
             'deactivated_at' => 'datetime',
+            'registration_device_at' => 'datetime',
         ];
     }
 
@@ -369,6 +370,24 @@ class User extends Authenticatable
     public function themes(): HasMany
     {
         return $this->hasMany(UserTheme::class);
+    }
+
+    // Notification system (NOTIF-1 … 10). Not `notifications()`: that name
+    // belongs to the Notifiable trait and its `notifications` table.
+
+    public function pushDevices(): HasMany
+    {
+        return $this->hasMany(PushDevice::class);
+    }
+
+    public function notificationPreference(): HasOne
+    {
+        return $this->hasOne(NotificationPreference::class);
+    }
+
+    public function userNotifications(): HasMany
+    {
+        return $this->hasMany(UserNotification::class);
     }
 
     /**

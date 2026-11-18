@@ -7,8 +7,13 @@ use App\Models\ChatSession;
 use App\Models\ContentFeedback;
 use App\Models\DebugReport;
 use App\Models\EloInteraction;
+use App\Models\NotificationBroadcastRecipient;
+use App\Models\NotificationEvent;
+use App\Models\NotificationPreference;
+use App\Models\NotificationUserState;
 use App\Models\PracticeCard;
 use App\Models\PracticeReviewLog;
+use App\Models\PushDevice;
 use App\Models\QuizAttempt;
 use App\Models\SkillEventLog;
 use App\Models\StudentFsrsProfile;
@@ -19,6 +24,7 @@ use App\Models\UserAvatarItem;
 use App\Models\UserCourse;
 use App\Models\UserEloProfile;
 use App\Models\UserMerge;
+use App\Models\UserNotification;
 use App\Models\UserProgress;
 use App\Models\UserStats;
 use App\Models\UserTheme;
@@ -105,6 +111,7 @@ class UserMergeService
             $log['content_feedback'] = $this->reassignSimple($source, $target, ContentFeedback::class);
             $log['debug_reports'] = $this->reassignSimple($source, $target, DebugReport::class);
             $log['skill_event_logs'] = $this->reassignSkillEventLogs($source, $target);
+            $log['notifications'] = $this->mergeNotifications($source, $target);
 
             // Stats merge depends on user_courses + achievements being merged first.
             $log['user_stats'] = $this->mergeUserStats($source, $target);
@@ -311,6 +318,8 @@ class UserMergeService
                 'content_feedback' => ContentFeedback::where('user_id', $user->id)->count(),
                 'debug_reports' => DebugReport::where('user_id', $user->id)->count(),
                 'skill_event_logs' => SkillEventLog::where('student_id', $user->id)->count(),
+                'user_notifications' => UserNotification::where('user_id', $user->id)->count(),
+                'push_devices' => PushDevice::where('user_id', $user->id)->count(),
             ],
         ];
     }
@@ -815,6 +824,62 @@ class UserMergeService
             ->update(['student_id' => $target->id]);
 
         return ['reassigned' => $count];
+    }
+
+    /**
+     * The notification tables (NOTIF-1 … 10).
+     *
+     * - user_notifications and their notification_events move: the feed and
+     *   its history are the person's, whichever account they arrived on.
+     *   Their dedup keys move with them, so the surviving account is not
+     *   congratulated a second time for something the source already was.
+     * - notification_preferences / notification_user_states are one row per
+     *   user: the target's wins, the source's moves only when the target has
+     *   none.
+     * - notification_broadcast_recipients move, except where the target was
+     *   addressed by the same broadcast already (unique per broadcast).
+     * - push_devices do NOT move; the source's are deleted. A device belongs
+     *   to the session that registered it, and finalizeSource() revokes every
+     *   source session anyway (the cascade would take the devices with
+     *   them). Moving them would leave a phone that is about to be logged out
+     *   receiving the target's pushes; the app registers the device again on
+     *   its next login, under the target's new session.
+     *
+     * @return array<string, int|string>
+     */
+    private function mergeNotifications(User $source, User $target): array
+    {
+        $stats = [];
+
+        $stats['user_notifications'] = UserNotification::where('user_id', $source->id)
+            ->update(['user_id' => $target->id]);
+        $stats['notification_events'] = NotificationEvent::where('user_id', $source->id)
+            ->update(['user_id' => $target->id]);
+
+        foreach ([NotificationPreference::class, NotificationUserState::class] as $model) {
+            $key = (new $model())->getTable();
+            $sourceRow = $model::find($source->id);
+
+            if ($sourceRow === null) {
+                $stats[$key] = 'none';
+            } elseif ($model::whereKey($target->id)->exists()) {
+                $sourceRow->delete();
+                $stats[$key] = 'kept_target';
+            } else {
+                $model::whereKey($source->id)->update(['user_id' => $target->id]);
+                $stats[$key] = 'reassigned_source';
+            }
+        }
+
+        $stats['notification_broadcast_recipients_dropped'] = NotificationBroadcastRecipient::where('user_id', $source->id)
+            ->whereIn('broadcast_id', NotificationBroadcastRecipient::where('user_id', $target->id)->select('broadcast_id'))
+            ->delete();
+        $stats['notification_broadcast_recipients'] = NotificationBroadcastRecipient::where('user_id', $source->id)
+            ->update(['user_id' => $target->id]);
+
+        $stats['push_devices_dropped'] = PushDevice::where('user_id', $source->id)->delete();
+
+        return $stats;
     }
 
     /**

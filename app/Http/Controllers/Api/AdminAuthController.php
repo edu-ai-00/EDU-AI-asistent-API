@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Mail\VerificationCodeMail;
+use App\Models\PushDevice;
 use App\Models\User;
 use App\Models\VerificationCode;
 use App\Services\AuditLogger;
@@ -188,8 +189,13 @@ class AdminAuthController extends Controller
             $current->forceFill(['expires_at' => $graceEnd])->save();
         }
 
-        $token = $user->createToken($name, $abilities, $expiresAt)
-            ->plainTextToken;
+        $issued = $user->createToken($name, $abilities, $expiresAt);
+        $token = $issued->plainTextToken;
+
+        // A device registered under this session follows it, as on
+        // /api/auth/refresh — the grace-period token expires and is pruned
+        // soon, and the cascade would take the device with it.
+        PushDevice::repointToken((int) $current->getKey(), (int) $issued->accessToken->getKey());
 
         return response()->json([
             'token' => $token,

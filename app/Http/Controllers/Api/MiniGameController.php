@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Models\MiniGame;
 use App\Models\MiniGamePlay;
 use App\Models\UserStats;
+use App\Notifications\NotificationProducers;
+use App\Notifications\NotificationTargetActions;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -120,6 +122,8 @@ class MiniGameController extends Controller
             ], 409);
         }
 
+        NotificationProducers::action($user->id, NotificationTargetActions::GAME_PLAYED);
+
         return response()->json([
             'data' => $game->toClientArray($level) + [
                 // The client holds on to this and reports the final score
@@ -175,6 +179,8 @@ class MiniGameController extends Controller
         }
 
         UserStats::creditCoins($user->id, $coins);
+
+        NotificationProducers::action($user->id, NotificationTargetActions::GAME_PLAYED);
 
         return response()->json([
             'data' => [

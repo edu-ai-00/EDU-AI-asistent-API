@@ -59,4 +59,54 @@ class WorkTimeReportTest extends TestCase
         $this->assertSame(150, $out['sessions'][0]['duration']);
         $this->assertStringContainsString('2026-07-09', $out['sessions'][0]['start']);
     }
+
+    public function test_sessions_carry_the_devices_their_heartbeats_came_from(): void
+    {
+        $base = 1783584000;
+        $phone = ['platform' => 'android', 'type' => 'mobile'];
+        $pc = ['platform' => 'web', 'type' => 'desktop'];
+
+        $out = $this->report()->aggregate(
+            // Two sessions: 10:00–10:02 and, after a 2 h break, 12:00–12:01.
+            ['math' => [$base, $base + 60, $base + 120, $base + 7200, $base + 7260]],
+            'Europe/Prague',
+            ['math' => [
+                ['at' => $base, ...$phone],
+                ['at' => $base + 60, ...$phone],
+                // Switched to the PC within the same session.
+                ['at' => $base + 120, ...$pc],
+                ['at' => $base + 7200, ...$pc],
+                ['at' => $base + 7260, ...$pc],
+            ]],
+        );
+
+        // Most recent first.
+        $this->assertSame([$pc], $out['sessions'][0]['devices']);
+        $this->assertSame([$phone, $pc], $out['sessions'][1]['devices']);
+    }
+
+    public function test_sessions_without_device_data_have_no_devices(): void
+    {
+        $base = 1783584000;
+
+        // Older app builds sent no device, and ELO interactions never carry one.
+        $out = $this->report()->aggregate(['math' => [$base, $base + 60]], 'Europe/Prague');
+
+        $this->assertSame([], $out['sessions'][0]['devices']);
+    }
+
+    public function test_devices_are_matched_to_sessions_per_course(): void
+    {
+        $base = 1783584000;
+
+        $out = $this->report()->aggregate(
+            ['math' => [$base], 'lang' => [$base + 30]],
+            'Europe/Prague',
+            ['lang' => [['at' => $base + 30, 'platform' => 'ios', 'type' => 'tablet']]],
+        );
+
+        $byCourse = array_column($out['sessions'], 'devices', 'course_id');
+        $this->assertSame([], $byCourse['math']);
+        $this->assertSame([['platform' => 'ios', 'type' => 'tablet']], $byCourse['lang']);
+    }
 }

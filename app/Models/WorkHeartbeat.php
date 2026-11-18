@@ -12,6 +12,8 @@ class WorkHeartbeat extends Model
         'client_uuid',
         'course_id',
         'lesson_id',
+        'platform',
+        'device_type',
         'occurred_at',
     ];
 

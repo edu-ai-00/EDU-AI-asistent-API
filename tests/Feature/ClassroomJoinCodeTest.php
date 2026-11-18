@@ -320,7 +320,7 @@ class ClassroomJoinCodeTest extends TestCase
     {
         // BR-472CMD: a refused join (unknown code, a minor's account, …) is
         // the product answering what was typed, not a server fault, so it
-        // must not page Nightwatch as an exception.
+        // must not page Sentry as an exception.
         Exceptions::fake();
         Classroom::create(['name' => '5.A', 'join_code' => 'AB12']);
 

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Course;
 use App\Models\UserCourse;
+use App\Notifications\NotificationProducers;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -107,6 +108,14 @@ class UserCourseController extends Controller
             ->where('course_id', $course->id)
             ->firstOrFail();
 
+        // What the notification hooks compare against (50 % milestone,
+        // completion) — taken before the write.
+        $before = [
+            'progress_percent' => (int) $userCourse->progress_percent,
+            'status' => $userCourse->status,
+            'completed_lessons' => (int) $userCourse->completed_lessons,
+        ];
+
         $validated = $request->validate([
             'progress_percent' => 'sometimes|integer|min:0|max:100',
             'status' => 'sometimes|in:downloaded,in_progress,completed',
@@ -175,6 +184,8 @@ class UserCourseController extends Controller
         }
 
         $userCourse->update($validated);
+
+        NotificationProducers::courseProgressed($request->user(), $course, $before, $userCourse);
 
         return response()->json([
             'message' => 'Progress updated',

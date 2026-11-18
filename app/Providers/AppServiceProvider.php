@@ -3,16 +3,22 @@
 namespace App\Providers;
 
 use App\Models\User;
+use App\Notifications\Push\FcmPushSender;
+use App\Notifications\Push\NullPushSender;
+use App\Notifications\Push\PushSender;
 use App\Services\AppleIdTokenVerifier;
 use App\Services\GoogleIdTokenVerifier;
 use App\Services\MicrosoftIdTokenVerifier;
 use App\Services\RagSearchService;
+use App\Support\SentryPrivacy;
 use App\Support\WorkSessionizer;
+use Illuminate\Auth\Events\Authenticated;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
-use Laravel\Nightwatch\Facades\Nightwatch;
+use Laravel\Sanctum\Events\TokenAuthenticated;
 use Laravel\Sanctum\Sanctum;
 
 class AppServiceProvider extends ServiceProvider
@@ -48,6 +54,15 @@ class AppServiceProvider extends ServiceProvider
             );
         });
 
+        // Push delivery (NOTIF-3). FCM when FCM_PROJECT_ID + FCM_CREDENTIALS
+        // are set, otherwise a sender that reports push as unavailable — the
+        // feed works either way. A plain bind, not a singleton, so a config
+        // change (tests, a credentials rotation picked up by a fresh worker)
+        // is seen; the OAuth token is cached separately.
+        $this->app->bind(PushSender::class, function () {
+            return FcmPushSender::fromConfig() ?? new NullPushSender();
+        });
+
         // RAG search client (Školník / Cermatík chat personas). Bound so
         // feature tests can swap in a fake without hitting the service.
         $this->app->bind(RagSearchService::class, function () {
@@ -77,15 +92,10 @@ class AppServiceProvider extends ServiceProvider
                 && ! ($accessToken->tokenable instanceof User && $accessToken->tokenable->isDeactivated()),
         );
 
-        // Nightwatch attaches the signed-in user to every request, exception
-        // and log. By default that is the user's name and email — for most of
-        // our users a child's. Team accounts keep theirs (an admin hitting a
-        // 500 is someone to call); everyone else is sent as id + role only,
-        // which is enough to look them up in the admin and keeps student PII
-        // out of a third-party store the erasure flow cannot reach.
-        Nightwatch::user(fn (User $user) => $user->isAdminOrTeacher()
-            ? ['name' => (string) $user->name, 'username' => (string) $user->email]
-            : ['name' => $user->is_guest ? 'guest' : ($user->is_minor ? 'student (minor)' : 'student'), 'username' => '']);
+        // Sentry attaches the signed-in user to every error, trace and log.
+        // config/sentry.php turns the SDK's own user collection off (it would
+        // send every student's email); SentryPrivacy::user() decides instead.
+        Event::listen([TokenAuthenticated::class, Authenticated::class], SentryPrivacy::class);
 
         RateLimiter::for('chat-messages', function (Request $request) {
             return Limit::perMinute(20)

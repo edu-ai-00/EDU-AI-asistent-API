@@ -49,6 +49,10 @@ class UploadCourseRequest extends FormRequest
             // Transport-only: when true the server assigns the next version
             // instead of rejecting a stale one. Stripped before storing.
             'auto_version' => 'sometimes|boolean',
+            // Transport-only: the version the editor's copy was loaded from. A
+            // save over a course that has moved on since is refused
+            // (BR-JUWYK2). Stripped before storing.
+            'base_version' => 'sometimes|nullable|integer|min:1',
 
             'lessons' => 'sometimes|array',
             'lessons.*' => 'array',

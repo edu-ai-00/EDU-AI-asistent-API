@@ -4,6 +4,8 @@ namespace App\Services;
 
 use App\Http\Controllers\Api\AnswerPhotoController;
 use App\Models\DebugReport;
+use App\Models\NotificationBroadcastRecipient;
+use App\Models\NotificationEvent;
 use App\Models\User;
 use App\Models\UserMerge;
 use Illuminate\Support\Facades\DB;
@@ -21,17 +23,26 @@ use Illuminate\Support\Facades\Storage;
  * (chat_messages cascades transitively via chat_session_id), user_themes,
  * practice_cards, practice_review_logs (cascades directly on its own
  * user_id, and again transitively via card_id), student_fsrs_profiles,
- * news_user_reads, work_heartbeats, skill_event_logs. courses.created_by is
+ * news_user_reads, work_heartbeats, skill_event_logs, and the notification
+ * tables (NOTIF-1 … 10): user_notifications, push_devices,
+ * notification_preferences, notification_user_states. courses.created_by is
  * nullOnDelete, not cascade, but is never a minor's own data (minors don't
  * author courses) so it is out of scope here. This list is the prose
  * backstop; StudentDataEraserTest::
  * test_erasing_a_child_cascades_across_every_owned_table() is the version
  * that actually gets checked when a migration changes.
  *
- * Two tables need explicit handling because they do not cascade cleanly:
+ * Four tables need explicit handling because they do not cascade cleanly:
  *
  * - personal_access_tokens is polymorphic with no foreign key at all, so
  *   nothing would ever remove a child's Sanctum tokens without this.
+ * - notification_events and notification_broadcast_recipients keep user_id
+ *   as a plain number on purpose (a decision log must be able to name a
+ *   recipient that does not exist; a broadcast's recipient snapshot outlives
+ *   an ordinary account deletion). An erasure is not ordinary: the child's
+ *   rows go explicitly. Events hanging off the child's notifications would
+ *   cascade anyway; the ones without a notification (rejected / suppressed
+ *   decisions) would not.
  * - debug_reports.user_id was declared nullOnDelete() but, until the
  *   migration that added an actual ->constrained() call, carried no real
  *   foreign key — Fluent drops nullOnDelete() silently when there's nothing
@@ -118,6 +129,8 @@ class StudentDataEraser
     {
         $user->tokens()->delete();
         DebugReport::where('user_id', $user->id)->delete();
+        NotificationEvent::where('user_id', $user->id)->delete();
+        NotificationBroadcastRecipient::where('user_id', $user->id)->delete();
         $user->delete();
     }
 

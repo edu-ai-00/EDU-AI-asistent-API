@@ -11,6 +11,12 @@ use App\Models\DebugReport;
 use App\Models\EloInteraction;
 use App\Models\News;
 use App\Models\NewsUserRead;
+use App\Models\NotificationBroadcast;
+use App\Models\NotificationBroadcastRecipient;
+use App\Models\NotificationEvent;
+use App\Models\NotificationPreference;
+use App\Models\NotificationUserState;
+use App\Models\PushDevice;
 use App\Models\PracticeCard;
 use App\Models\PracticeReviewLog;
 use App\Models\QuizAttempt;
@@ -24,7 +30,10 @@ use App\Models\UserProgress;
 use App\Models\UserStats;
 use App\Models\UserTheme;
 use App\Models\WorkHeartbeat;
+use App\Notifications\NotificationRequest;
+use App\Notifications\NotificationService;
 use App\Services\StudentDataEraser;
+use Database\Seeders\NotificationCatalogSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -115,7 +124,27 @@ class StudentDataEraserTest extends TestCase
             'user_id' => $child->id, 'app_version' => '1.0', 'platform' => 'web',
             'report_data' => ['note' => 'test'],
         ]);
-        $child->createToken('t');
+        $sessionToken = $child->createToken('t');
+
+        // Notification tables (NOTIF-1 … 10).
+        $this->seed(NotificationCatalogSeeder::class);
+        $notification = app(NotificationService::class)
+            ->send(new NotificationRequest('course_completed', [$child->id], ['course_id' => $course->id]))
+            ->delivered[0];
+        // A decision with no notification row (user_id only, no foreign key).
+        app(NotificationService::class)->send(new NotificationRequest('course_completed', [$child->id], ['course_id' => $course->id]));
+        PushDevice::create([
+            'user_id' => $child->id, 'token' => 'fcm-child', 'platform' => 'android',
+            'personal_access_token_id' => $sessionToken->accessToken->id, 'last_seen_at' => now(),
+        ]);
+        NotificationPreference::create(['user_id' => $child->id, 'timezone' => 'Europe/Prague']);
+        NotificationUserState::create(['user_id' => $child->id, 'week_key' => '2026-W41', 'week_start_xp' => 10]);
+        $broadcast = NotificationBroadcast::create([
+            'title' => 'Zpráva', 'body' => 'Text', 'type_key' => 'school_important_message',
+            'channels' => ['feed'], 'targeting' => ['school_ids' => [1], 'classroom_ids' => [], 'roles' => ['student']],
+        ]);
+        NotificationBroadcastRecipient::create(['broadcast_id' => $broadcast->id, 'user_id' => $child->id, 'role' => 'student']);
+        $this->assertSame(1, NotificationEvent::where('user_id', $child->id)->whereNull('notification_id')->count());
 
         app(StudentDataEraser::class)->erase($child->fresh());
 
@@ -142,6 +171,15 @@ class StudentDataEraserTest extends TestCase
             'tokenable_id' => $child->id,
             'tokenable_type' => User::class,
         ]);
+        $this->assertDatabaseMissing('user_notifications', ['user_id' => $child->id]);
+        $this->assertDatabaseMissing('notification_events', ['user_id' => $child->id]);
+        $this->assertDatabaseMissing('notification_events', ['notification_id' => $notification->id]);
+        $this->assertDatabaseMissing('push_devices', ['user_id' => $child->id]);
+        $this->assertDatabaseMissing('notification_preferences', ['user_id' => $child->id]);
+        $this->assertDatabaseMissing('notification_user_states', ['user_id' => $child->id]);
+        $this->assertDatabaseMissing('notification_broadcast_recipients', ['user_id' => $child->id]);
+        // The broadcast itself is the admin's, not the child's.
+        $this->assertDatabaseHas('notification_broadcasts', ['id' => $broadcast->id]);
 
         // The course and news rows themselves are shared content, not the
         // child's own data — they must survive.

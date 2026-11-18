@@ -94,6 +94,7 @@ class ChatSessionController extends Controller
         $userMessages = $session->messages()
             ->where('role', 'user')
             ->orderBy('created_at', 'asc')
+            ->orderBy('id', 'asc')
             ->limit(5)
             ->pluck('content')
             ->implode("\n");

@@ -57,7 +57,13 @@ class AnswerEvaluationController extends Controller
             'language' => 'sometimes|nullable|string|max:32',
         ]);
 
+        // BR-2RKV3Z asked where the ~10 s a student waits actually goes. The
+        // request is timed from here, before the photo is fetched, so the three
+        // candidates — R2, the model, everything else — are separable.
+        $startedAt = hrtime(true);
+
         $photo = $this->loadPhoto($request, $validated['photo_name'] ?? null);
+        $photoMs = $this->sinceMs($startedAt);
 
         if (trim((string) ($validated['student_answer'] ?? '')) === '' && $photo === null) {
             return response()->json([
@@ -86,7 +92,22 @@ class AnswerEvaluationController extends Controller
         $validated['photo'] = $photo;
         unset($validated['photo_name']);
 
-        $result = $this->evaluator->evaluate($validated);
+        $result = $this->evaluator->evaluate($validated, $modelTiming);
+
+        $timing = (array) $modelTiming + [
+            'photo' => $photoMs,
+            'request' => $this->sinceMs($startedAt),
+        ];
+
+        // One line per evaluation, so the breakdown can be read off the
+        // production logs without waiting for someone to reproduce it. Also
+        // logged when the evaluation gave up: a timeout spends the whole
+        // budget, and that is the slowest thing this endpoint can do.
+        Log::info('Answer evaluation timing', $timing + [
+            'model' => $result['model'] ?? null,
+            'has_photo' => $photo !== null,
+            'outcome' => $result === null ? 'unavailable' : 'ok',
+        ]);
 
         if ($result === null) {
             // 503 rather than 500: this is "try again", not "something is
@@ -97,7 +118,15 @@ class AnswerEvaluationController extends Controller
             ], 503);
         }
 
+        $result['timing_ms'] = $timing;
+
         return response()->json(['data' => $result]);
+    }
+
+    /** Milliseconds since an `hrtime(true)` mark. */
+    private function sinceMs(int $startedAt): int
+    {
+        return (int) round((hrtime(true) - $startedAt) / 1_000_000);
     }
 
     /**
@@ -129,7 +158,10 @@ class AnswerEvaluationController extends Controller
         }
 
         return [
-            'mime' => Storage::disk('s3')->mimeType($path) ?: 'image/jpeg',
+            // From the handle, not from the disk: mimeType() is a HEAD request
+            // of its own against R2, on the student's critical path, for an
+            // answer the upload already sniffed and stored (BR-2RKV3Z).
+            'mime' => AnswerPhotoController::mimeFor($path),
             'bytes' => $bytes,
         ];
     }

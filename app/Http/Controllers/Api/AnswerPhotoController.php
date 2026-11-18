@@ -135,6 +135,24 @@ class AnswerPhotoController extends Controller
     }
 
     /**
+     * Content type of a stored photo, read off its handle.
+     *
+     * The upload sniffed the bytes, checked them against
+     * `chat.answer_photo_mimes` and named the object after the extension it
+     * guessed from them, so the extension is authoritative — and free. Asking
+     * the disk instead costs a HEAD request to R2 while a student waits for
+     * feedback (BR-2RKV3Z). Accepts a bare handle or a full path.
+     */
+    public static function mimeFor(string $nameOrPath): string
+    {
+        return match (strtolower(pathinfo($nameOrPath, PATHINFO_EXTENSION))) {
+            'png' => 'image/png',
+            'webp' => 'image/webp',
+            default => 'image/jpeg',
+        };
+    }
+
+    /**
      * Resolve a client-supplied handle to a readable path, or null.
      *
      * Used by the evaluation endpoint. Returns null rather than throwing so a

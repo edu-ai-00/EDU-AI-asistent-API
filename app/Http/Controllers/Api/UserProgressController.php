@@ -9,6 +9,8 @@ use App\Models\Course;
 use App\Models\EloInteraction;
 use App\Models\UserCourse;
 use App\Models\UserProgress;
+use App\Notifications\NotificationProducers;
+use App\Notifications\NotificationTargetActions;
 use App\Services\AuditLogger;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
@@ -78,6 +80,8 @@ class UserProgressController extends Controller
                 'updated_at' => $record->updated_at->toIso8601String(),
             ];
         }
+
+        NotificationProducers::action($userId, NotificationTargetActions::LEARNING_ACTIVITY);
 
         return response()->json([
             'progress' => $results,
@@ -606,6 +610,13 @@ class UserProgressController extends Controller
 
             foreach ($stepAnswers as $stepId => $ans) {
                 if (! is_array($ans)) {
+                    continue;
+                }
+
+                // Typed or picked but not checked yet: the app keeps the draft
+                // so it survives leaving the lesson (BR-PW5EQK), but it is not
+                // an answer. Answers saved before the flag existed lack it.
+                if (($ans['isAnswered'] ?? true) === false) {
                     continue;
                 }
 

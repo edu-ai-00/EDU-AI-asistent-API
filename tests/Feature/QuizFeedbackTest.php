@@ -51,12 +51,15 @@ class QuizFeedbackTest extends TestCase
         ];
     }
 
-    private function fakeModelComment(string $text): void
+    private function fakeModelComment(string $text, ?string $finishReason = null): void
     {
         Http::fake([
             'openrouter.test/*' => Http::response([
                 'choices' => [
-                    ['message' => ['role' => 'assistant', 'content' => $text]],
+                    [
+                        'message' => ['role' => 'assistant', 'content' => $text],
+                        'finish_reason' => $finishReason,
+                    ],
                 ],
             ]),
         ]);
@@ -99,6 +102,56 @@ class QuizFeedbackTest extends TestCase
 
             return str_contains($system, 'UPRAVENÝ PROMPT Z ADMINU');
         });
+    }
+
+    public function test_the_token_budget_leaves_room_for_reasoning(): void
+    {
+        // Prod's model reasons before it answers, and OpenRouter counts those
+        // tokens against max_tokens: at the old 500 the reasoning ate most of
+        // the budget and the student got half a sentence (BR-STUAH3).
+        $this->fakeModelComment('Komentář.');
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/quiz/feedback', $this->payload())->assertOk();
+
+        Http::assertSent(fn ($request) => $request['max_tokens'] >= 2000);
+    }
+
+    public function test_a_reply_cut_off_by_the_token_limit_keeps_only_whole_sentences(): void
+    {
+        $this->fakeModelComment(
+            'Na úlohy sis vzal dost času. Příště klidně využij nápovědu! Zkus si zopakovat sčítání zlo',
+            'length',
+        );
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/quiz/feedback', $this->payload())
+            ->assertOk()
+            ->assertJsonPath(
+                'data.comment',
+                'Na úlohy sis vzal dost času. Příště klidně využij nápovědu!',
+            );
+    }
+
+    public function test_a_reply_cut_off_inside_its_first_sentence_is_withheld(): void
+    {
+        // The exact text the client saw: rather than half a sentence, the
+        // popup hides the section as it does for any other failure.
+        $this->fakeModelComment('Vidím, že ses do všech tří úloh pustil samostatně a', 'length');
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/quiz/feedback', $this->payload())
+            ->assertStatus(503);
+    }
+
+    public function test_a_finished_reply_is_returned_whole(): void
+    {
+        $this->fakeModelComment('První věta. Druhá věta bez tečky', 'stop');
+        Sanctum::actingAs(User::factory()->create());
+
+        $this->postJson('/api/quiz/feedback', $this->payload())
+            ->assertOk()
+            ->assertJsonPath('data.comment', 'První věta. Druhá věta bez tečky');
     }
 
     public function test_model_failure_returns_503(): void

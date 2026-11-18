@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\QuizAttempt;
+use App\Notifications\NotificationProducers;
+use App\Notifications\NotificationTargetActions;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -87,6 +89,10 @@ class QuizAttemptController extends Controller
             $attempt = QuizAttempt::create(['user_id' => $userId, ...$validated]);
             $created = true;
         }
+
+        // Target actions (NOTIF-8 F): a finished quiz, and learning at all.
+        NotificationProducers::action($userId, NotificationTargetActions::QUIZ_COMPLETED);
+        NotificationProducers::action($userId, NotificationTargetActions::LEARNING_ACTIVITY);
 
         return response()->json([
             'id' => $attempt->id,

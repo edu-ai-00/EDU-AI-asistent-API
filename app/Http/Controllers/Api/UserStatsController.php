@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\UserStats;
+use App\Notifications\NotificationProducers;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -41,6 +42,9 @@ class UserStatsController extends Controller
         ]);
 
         $stats = UserStats::getOrCreateForUser($request->user()->id);
+        // What the notification hooks compare against (streak milestones,
+        // daily / weekly XP goals) — taken before the write.
+        $before = NotificationProducers::statsSnapshot($stats);
 
         // XP (and its derivatives) only ever grow. A client that synced before
         // a profile merge may push a stale, lower total and would silently
@@ -58,10 +62,13 @@ class UserStatsController extends Controller
         }
 
         $stats->update($validated);
+        $stats = $stats->fresh();
+
+        NotificationProducers::statsSynced($request->user(), $before, $stats);
 
         return response()->json([
             'message' => 'Stats updated',
-            'stats' => $this->formatStats($stats->fresh()),
+            'stats' => $this->formatStats($stats),
         ]);
     }
 

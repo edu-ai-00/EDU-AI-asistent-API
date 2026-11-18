@@ -1,6 +1,13 @@
 #!/bin/bash
 set -e
 
+# Sentry release = the deployed commit. Exported before anything else starts
+# so the web server, the scheduler and the queue worker below all tag their
+# events with the same release (config/sentry.php reads SENTRY_RELEASE).
+if [ -z "$SENTRY_RELEASE" ] && [ -n "$RAILWAY_GIT_COMMIT_SHA" ]; then
+    export SENTRY_RELEASE="$RAILWAY_GIT_COMMIT_SHA"
+fi
+
 php artisan config:clear
 php artisan route:clear
 php artisan migrate --force
@@ -18,8 +25,14 @@ php artisan db:seed --class=MiniGameSeeder --force
 # no storage calls and never clobbers an admin's replacement upload.
 php artisan db:seed --class=AvatarItemSeeder --force
 
-# Runs $* in a restart loop, forever, in the background. Both the Nightwatch
-# agent and the scheduler below are meant to run for the container's whole
+# Notification types and their system rules (NOTIF-1 … 10). Without them no
+# rule fires and the admin's Notifikace page is empty. Create-if-missing, keyed
+# on `key`: a deploy adds what is new and never puts back a text, limit or
+# channel the admin has since edited.
+php artisan db:seed --class=NotificationCatalogSeeder --force
+
+# Runs $* in a restart loop, forever, in the background. Both the scheduler
+# and the queue worker below are meant to run for the container's whole
 # lifetime; without something supervising them, a crash (DB blip, OOM) just
 # ends the process silently — php artisan serve keeps answering requests and
 # the container looks perfectly healthy while cron (including the consent
@@ -38,26 +51,16 @@ run_supervised() {
     ) &
 }
 
-if [ -n "$NIGHTWATCH_TOKEN" ]; then
-    echo "Starting Nightwatch agent..."
-    run_supervised php artisan nightwatch:agent
-
-    # Deploy marker: Nightwatch draws a line at each deploy so a regression
-    # lines up with the commit that caused it. config/nightwatch.php already
-    # tags every record with the same SHA. Backgrounded because it is an HTTP
-    # call with a 10s timeout and boot must not wait on it; the command never
-    # exits non-zero, it only prints why a marker could not be sent.
-    if [ -n "$RAILWAY_GIT_COMMIT_SHA" ]; then
-        php artisan nightwatch:deploy "$RAILWAY_GIT_COMMIT_SHA" \
-            --ref="$RAILWAY_GIT_COMMIT_SHA" \
-            --name="${RAILWAY_GIT_BRANCH:-deploy}@${RAILWAY_GIT_COMMIT_SHA:0:7}: $(printf '%s' "$RAILWAY_GIT_COMMIT_MESSAGE" | head -n1 | cut -c1-120)" \
-            --url="https://github.com/${RAILWAY_GIT_REPO_OWNER:-nobig-deals}/${RAILWAY_GIT_REPO_NAME:-eduai}/commit/$RAILWAY_GIT_COMMIT_SHA" &
-    fi
-fi
-
 # Scheduler — without this nothing scheduled in routes/console.php ever runs,
 # including the consent purge that backs our 30-day erasure promise.
 run_supervised php artisan schedule:work
+
+# Queue worker. Notifications are queued work — rule evaluation, delayed
+# sends, broadcasts, every push — so without a worker no rule ever fires and
+# nothing is pushed, while the request that emitted the event looks fine.
+# `notifications` is drained before `default`. --max-time ends the worker hourly and
+# run_supervised starts a fresh one, so a slow memory leak cannot build up.
+run_supervised php artisan queue:work --queue=notifications,default --sleep=3 --tries=3 --max-time=3600
 
 # `php artisan serve` runs PHP's built-in server, which handles ONE request at a
 # time unless PHP_CLI_SERVER_WORKERS says otherwise — and Laravel only honours

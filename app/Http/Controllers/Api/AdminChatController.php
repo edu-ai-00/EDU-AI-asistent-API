@@ -76,7 +76,11 @@ class AdminChatController extends Controller
     {
         $session = ChatSession::with('user:id,name,email')->findOrFail($id);
 
-        $messages = $session->messages()->orderBy('created_at', 'asc')->get();
+        // `id` breaks the tie: a question and its answer are written in the
+        // same request, and Eloquent stores timestamps to the whole second, so
+        // `created_at` alone is not a total order and Postgres was handing the
+        // admin the answer first (BR-9M9BKT).
+        $messages = $session->messages()->orderBy('created_at', 'asc')->orderBy('id', 'asc')->get();
 
         return response()->json([
             'data' => [

@@ -382,6 +382,14 @@ class AdminUserController extends Controller
                 'teaching_classroom_ids' => $user->teachingClassrooms->pluck('id')->all(),
                 'email_verified_at' => $user->email_verified_at?->toIso8601String(),
                 'created_at' => $user->created_at->toIso8601String(),
+                // The device of the first sign-in to the app (BR-CMA88Y).
+                // Null for accounts from before it was recorded and for
+                // sign-ins from older app builds.
+                'registration_device' => $user->registration_device_at ? [
+                    'platform' => $user->registration_platform,
+                    'type' => $user->registration_device_type,
+                    'at' => $user->registration_device_at->toIso8601String(),
+                ] : null,
                 'deactivated_at' => $user->deactivated_at?->toIso8601String(),
                 'deactivated_by' => $deactivatedBy,
                 'stats' => $user->stats ? [

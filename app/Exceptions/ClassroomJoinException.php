@@ -14,7 +14,7 @@ use RuntimeException;
  *
  * Every throw is a 4xx answer to what the caller typed — unknown code,
  * already a member, a minor's account — so, like a validation error, it
- * is never reported: it would only page Nightwatch for the product
+ * is never reported: it would only page Sentry for the product
  * working as designed (BR-472CMD).
  */
 class ClassroomJoinException extends RuntimeException implements ShouldntReport

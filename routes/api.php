@@ -9,10 +9,16 @@ use App\Http\Controllers\Api\AdminChatController;
 use App\Http\Controllers\Api\ChatMessageController;
 use App\Http\Controllers\Api\ChatSessionController;
 use App\Http\Controllers\Api\AdminClassroomController;
+use App\Http\Controllers\Api\AdminDashboardBannerController;
 use App\Http\Controllers\Api\AdminSchoolController;
 use App\Http\Controllers\Api\AdminTeamController;
 use App\Http\Controllers\Api\AdminMentorController;
 use App\Http\Controllers\Api\AdminNewsController;
+use App\Http\Controllers\Api\AdminNotificationBroadcastController;
+use App\Http\Controllers\Api\AdminNotificationHistoryController;
+use App\Http\Controllers\Api\AdminNotificationMetaController;
+use App\Http\Controllers\Api\AdminNotificationRuleController;
+use App\Http\Controllers\Api\AdminNotificationTypeController;
 use App\Http\Controllers\Api\AdminUserController;
 use App\Http\Controllers\Api\AdminWorkTimeController;
 use App\Http\Controllers\Api\WorkHeartbeatController;
@@ -36,17 +42,22 @@ use App\Http\Controllers\Api\ConsentManageController;
 use App\Http\Controllers\Api\ContentFeedbackController;
 use App\Http\Controllers\Api\DebugReportController;
 use App\Http\Controllers\Api\CourseController;
+use App\Http\Controllers\Api\DashboardBannerController;
 use App\Http\Controllers\Api\CourseGenerationController;
 use App\Http\Controllers\Api\EloBackfillController;
 use App\Http\Controllers\Api\EloInteractionController;
 use App\Http\Controllers\Api\EloProfileController;
 use App\Http\Controllers\Api\EmailVerificationController;
+use App\Http\Controllers\Api\FeedController;
 use App\Http\Controllers\Api\GamificationConfigController;
 use App\Http\Controllers\Api\GpfController;
 use App\Http\Controllers\Api\LanguageController;
 use App\Http\Controllers\Api\MentorController;
 use App\Http\Controllers\Api\MiniGameController;
 use App\Http\Controllers\Api\NewsController;
+use App\Http\Controllers\Api\NotificationController;
+use App\Http\Controllers\Api\NotificationPreferenceController;
+use App\Http\Controllers\Api\PushDeviceController;
 use App\Http\Controllers\Api\OAuthController;
 use App\Http\Controllers\Api\UserAchievementController;
 use App\Http\Controllers\Api\QuizAttemptController;
@@ -310,10 +321,29 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/messages/{id}/feedback', [ChatMessageController::class, 'updateFeedback']);
     });
 
-    // News (read-only for users)
+    // News (read-only for users). Kept as is for app versions that predate
+    // /feed below.
     Route::get('/news', [NewsController::class, 'index']);
     Route::get('/news/{id}', [NewsController::class, 'show']);
     Route::post('/news/{id}/read', [NewsController::class, 'markRead']);
+
+    // Notifications (NOTIF-3/4/6/8): the Novinky feed (news + notifications),
+    // its badge and read state, events the app reports, settings, and FCM
+    // device registration. The literal paths are declared before
+    // /{notification_id}/read so no segment is read as an id.
+    Route::get('/feed', [FeedController::class, 'index']);
+    Route::get('/notifications/unread-count', [NotificationController::class, 'unreadCount']);
+    Route::post('/notifications/read-all', [NotificationController::class, 'readAll']);
+    Route::post('/notifications/events', [NotificationController::class, 'events']);
+    Route::post('/notifications/{notificationId}/read', [NotificationController::class, 'read']);
+    Route::get('/notification-preferences', [NotificationPreferenceController::class, 'show']);
+    Route::put('/notification-preferences', [NotificationPreferenceController::class, 'update']);
+
+    // Dashboard banners (BR-SAWX2U): the admin-managed strips the dashboard
+    // shows. Each carries its XP band for the app to evaluate locally.
+    Route::get('/dashboard/banners', [DashboardBannerController::class, 'index']);
+    Route::post('/push-devices', [PushDeviceController::class, 'store']);
+    Route::delete('/push-devices', [PushDeviceController::class, 'destroy']);
 
     // Mini games (read-only listing; play spends an attempt)
     Route::get('/mini-games', [MiniGameController::class, 'index']);
@@ -480,6 +510,51 @@ Route::middleware('admin')->group(function () {
     Route::post('/admin/vectors/{id}/dimensions/bulk', [VectorController::class, 'dimensionsBulkStore']);
     Route::put('/admin/vectors/{id}/dimensions/{dimId}', [VectorController::class, 'dimensionsUpdate']);
     Route::delete('/admin/vectors/{id}/dimensions/{dimId}', [VectorController::class, 'dimensionsDestroy']);
+
+    // Notifications (NOTIF-8/9/10, BR-QK6WW3): types, rules, catalog, queue
+    // health, broadcasts and history. Admin-only — a teacher gets 403. The
+    // literal paths are declared before the {id} ones they would shadow.
+    Route::get('/admin/notifications/meta', [AdminNotificationMetaController::class, 'meta']);
+    Route::get('/admin/notifications/queue-health', [AdminNotificationMetaController::class, 'queueHealth']);
+
+    Route::get('/admin/notification-types', [AdminNotificationTypeController::class, 'index']);
+    Route::get('/admin/notification-types/{id}', [AdminNotificationTypeController::class, 'show'])->whereNumber('id');
+    Route::put('/admin/notification-types/{id}', [AdminNotificationTypeController::class, 'update'])->whereNumber('id');
+    Route::post('/admin/notification-types/{id}/preview', [AdminNotificationTypeController::class, 'preview'])->whereNumber('id');
+    Route::post('/admin/notification-types/{id}/test', [AdminNotificationTypeController::class, 'test'])->whereNumber('id');
+    Route::get('/admin/notification-types/{id}/audit', [AdminNotificationTypeController::class, 'audit'])->whereNumber('id');
+
+    Route::get('/admin/notification-rules', [AdminNotificationRuleController::class, 'index']);
+    Route::post('/admin/notification-rules', [AdminNotificationRuleController::class, 'store']);
+    Route::post('/admin/notification-rules/validate', [AdminNotificationRuleController::class, 'validateDefinition']);
+    Route::get('/admin/notification-rules/{id}', [AdminNotificationRuleController::class, 'show'])->whereNumber('id');
+    Route::put('/admin/notification-rules/{id}', [AdminNotificationRuleController::class, 'update'])->whereNumber('id');
+    Route::delete('/admin/notification-rules/{id}', [AdminNotificationRuleController::class, 'destroy'])->whereNumber('id');
+    Route::post('/admin/notification-rules/{id}/test', [AdminNotificationRuleController::class, 'test'])->whereNumber('id');
+    Route::get('/admin/notification-rules/{id}/audit', [AdminNotificationRuleController::class, 'audit'])->whereNumber('id');
+
+    Route::get('/admin/notification-broadcasts', [AdminNotificationBroadcastController::class, 'index']);
+    Route::post('/admin/notification-broadcasts', [AdminNotificationBroadcastController::class, 'store']);
+    Route::post('/admin/notification-broadcasts/estimate', [AdminNotificationBroadcastController::class, 'estimate']);
+    Route::get('/admin/notification-broadcasts/{id}', [AdminNotificationBroadcastController::class, 'show'])->whereNumber('id');
+    Route::put('/admin/notification-broadcasts/{id}', [AdminNotificationBroadcastController::class, 'update'])->whereNumber('id');
+    Route::delete('/admin/notification-broadcasts/{id}', [AdminNotificationBroadcastController::class, 'destroy'])->whereNumber('id');
+    Route::post('/admin/notification-broadcasts/{id}/preview', [AdminNotificationBroadcastController::class, 'preview'])->whereNumber('id');
+    Route::post('/admin/notification-broadcasts/{id}/send', [AdminNotificationBroadcastController::class, 'send'])->whereNumber('id');
+    Route::post('/admin/notification-broadcasts/{id}/archive', [AdminNotificationBroadcastController::class, 'archive'])->whereNumber('id');
+
+    // Dashboard banners (BR-SAWX2U): the XP-banded strips on the app's
+    // dashboard, moved out of the app's code so the client retunes them here.
+    Route::get('/admin/dashboard-banners', [AdminDashboardBannerController::class, 'index']);
+    Route::post('/admin/dashboard-banners', [AdminDashboardBannerController::class, 'store']);
+    Route::get('/admin/dashboard-banners/{id}', [AdminDashboardBannerController::class, 'show'])->whereNumber('id');
+    Route::put('/admin/dashboard-banners/{id}', [AdminDashboardBannerController::class, 'update'])->whereNumber('id');
+    Route::delete('/admin/dashboard-banners/{id}', [AdminDashboardBannerController::class, 'destroy'])->whereNumber('id');
+
+    Route::get('/admin/notification-history', [AdminNotificationHistoryController::class, 'index']);
+    Route::get('/admin/notification-history/export', [AdminNotificationHistoryController::class, 'export']);
+    Route::get('/admin/notification-history/decisions', [AdminNotificationHistoryController::class, 'decisions']);
+    Route::get('/admin/notification-history/{id}', [AdminNotificationHistoryController::class, 'show'])->whereNumber('id');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

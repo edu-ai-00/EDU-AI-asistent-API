@@ -191,10 +191,19 @@ PROMPT;
      *   Null when the model is unreachable or answers with something we cannot
      *   parse. The caller surfaces a retry, never a wrong verdict — see
      *   BR-P745Q8: a failed evaluation must not be dressed up as feedback.
+     *
+     * @param  array<string, mixed>|null  $timing  Filled in on every path,
+     *   including the ones that return null — a timeout is the slowest thing
+     *   that can happen here, so it is the measurement worth keeping
+     *   (BR-2RKV3Z). See [timing].
      */
-    public function evaluate(array $task): ?array
+    public function evaluate(array $task, ?array &$timing = null): ?array
     {
+        $startedAt = hrtime(true);
         $hasPhoto = isset($task['photo']['bytes']) && $task['photo']['bytes'] !== '';
+
+        /** @var array<int, array{ms: int, prompt_tokens: ?int, completion_tokens: ?int}> $rounds */
+        $rounds = [];
 
         // BR-DF88P7: when the typed answer already *is* the expected answer,
         // there is nothing left for a model to decide — the student waited
@@ -202,12 +211,15 @@ PROMPT;
         // before the key, so these answers keep working even unconfigured.
         $shortcut = $this->exactMatch($task, $hasPhoto);
         if ($shortcut !== null) {
+            $timing = $this->timing($startedAt, $rounds);
+
             return $shortcut;
         }
 
         $apiKey = config('chat.api_key');
         if (empty($apiKey)) {
             Log::warning('Answer evaluation skipped: AI_API_KEY not configured');
+            $timing = $this->timing($startedAt, $rounds);
 
             return null;
         }
@@ -224,8 +236,10 @@ PROMPT;
             ['role' => 'user', 'content' => $this->buildUserContent($task, $criteria, $hasPhoto)],
         ];
 
-        $parsed = $this->requestFeedback($model, $messages, $hasPhoto);
+        $parsed = $this->requestFeedback($model, $messages, $hasPhoto, $rounds);
         if ($parsed === null) {
+            $timing = $this->timing($startedAt, $rounds);
+
             return null;
         }
 
@@ -239,7 +253,7 @@ PROMPT;
             $messages[] = ['role' => 'assistant', 'content' => json_encode($parsed, JSON_UNESCAPED_UNICODE)];
             $messages[] = ['role' => 'user', 'content' => self::RETRY_PROMPT];
 
-            $retry = $this->requestFeedback($model, $messages, $hasPhoto);
+            $retry = $this->requestFeedback($model, $messages, $hasPhoto, $rounds);
             if ($retry !== null && ! $this->leaks($retry, $reference, $task['question'] ?? '')) {
                 $parsed = $retry;
             } else {
@@ -248,6 +262,7 @@ PROMPT;
         }
 
         $threshold = (float) config('chat.eval_pass_threshold', 0.7);
+        $timing = $this->timing($startedAt, $rounds);
 
         return [
             'score' => $parsed['score'],
@@ -351,8 +366,10 @@ PROMPT;
      * @param  array<int, array<string, mixed>>  $messages
      * @return array<string, mixed>|null
      */
-    private function requestFeedback(string $model, array $messages, bool $hasPhoto): ?array
+    private function requestFeedback(string $model, array $messages, bool $hasPhoto, array &$rounds): ?array
     {
+        $startedAt = hrtime(true);
+
         try {
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer '.config('chat.api_key'),
@@ -375,6 +392,14 @@ PROMPT;
                     'messages' => $messages,
                 ]);
 
+            // Appended before anything can return: a round that 5xx'd or came
+            // back unparseable is the one whose duration we most want to see.
+            $rounds[] = [
+                'ms' => $this->sinceMs($startedAt),
+                'prompt_tokens' => $this->usage($response->json('usage.prompt_tokens')),
+                'completion_tokens' => $this->usage($response->json('usage.completion_tokens')),
+            ];
+
             if (! $response->successful()) {
                 Log::warning('Answer evaluation failed', [
                     'model' => $model,
@@ -387,10 +412,64 @@ PROMPT;
 
             return $this->parseResult((string) $response->json('choices.0.message.content', ''));
         } catch (\Throwable $e) {
-            Log::warning('Answer evaluation threw', ['error' => $e->getMessage()]);
+            // A timeout is the expensive failure — it spends the whole budget
+            // before giving up — so it has to be measured like any other round.
+            $rounds[] = [
+                'ms' => $this->sinceMs($startedAt),
+                'prompt_tokens' => null,
+                'completion_tokens' => null,
+            ];
+
+            Log::warning('Answer evaluation threw', [
+                'error' => $e->getMessage(),
+                'ms' => $this->sinceMs($startedAt),
+            ]);
 
             return null;
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Timing (BR-2RKV3Z)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Where the time went, in milliseconds.
+     *
+     * The report that asked for this ("vyhodnocení trvá cca 10 sekund") came
+     * with a proposed cure — a faster model — and no way to tell whether the
+     * wait is the model at all. Nothing on this path was measured, so every
+     * evaluation now carries its own breakdown and the answer stops being a
+     * guess. The per-round list is the point: the leak guard above can run the
+     * model twice, which doubles the wait on its own (BR-5FWNTK), and a single
+     * total would hide that.
+     *
+     * Token counts ride along because output length — not the model name — is
+     * what most of the generation time is spent on.
+     *
+     * @param  array<int, array{ms: int, prompt_tokens: ?int, completion_tokens: ?int}>  $rounds
+     * @return array<string, mixed>
+     */
+    private function timing(int $startedAt, array $rounds): array
+    {
+        return [
+            'total' => $this->sinceMs($startedAt),
+            'rounds' => count($rounds),
+            'rounds_ms' => array_map(fn (array $round) => $round['ms'], $rounds),
+            'prompt_tokens' => (int) array_sum(array_column($rounds, 'prompt_tokens')),
+            'completion_tokens' => (int) array_sum(array_column($rounds, 'completion_tokens')),
+        ];
+    }
+
+    private function sinceMs(int $startedAt): int
+    {
+        return (int) round((hrtime(true) - $startedAt) / 1_000_000);
+    }
+
+    /** Usage counters are advisory: not every provider returns them. */
+    private function usage(mixed $value): ?int
+    {
+        return is_numeric($value) ? (int) $value : null;
     }
 
     /**
